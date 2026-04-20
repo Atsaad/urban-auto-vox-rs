@@ -1,0 +1,41 @@
+# =============================================================================
+# Stage 1 — Build the static-ish Rust binary.
+# =============================================================================
+# Use the same Debian generation (bookworm) as the cuda base in stage 2 so
+# glibc/libssl ABI lines up at runtime.
+FROM rust:1.85-bookworm AS builder
+
+WORKDIR /src
+
+# Copy real sources directly and compile once. This avoids stale placeholder
+# artefacts from a two-phase stub build masking source changes.
+COPY rust-toolchain.toml ./
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+
+RUN cargo build --release --bin voxel-pipeline && \
+    strip target/release/voxel-pipeline
+
+# =============================================================================
+# Stage 2 — Runtime: reuse the existing CUDA + cuda_voxelizer image so we
+# inherit `/app/cuda_voxelizer/build/cuda_voxelizer` byte-for-byte. The Rust
+# binary replaces every `*.py` entrypoint that lived in `/app`.
+# =============================================================================
+FROM atsaad/voxel-pipeline:v7.4 AS runtime
+
+# Strip the Python pipeline so nobody can accidentally invoke it. The CUDA
+# voxelizer binary stays in place (that's what we wrap).
+RUN rm -f /app/*.py /app/main-obj-voxel-postgis-unified.py && \
+    rm -rf /app/__pycache__ /root/.cache/pip
+
+COPY --from=builder /src/target/release/voxel-pipeline /usr/local/bin/voxel-pipeline
+
+# Container contract — the same `PIPELINE_*` env vars the Python image
+# consumed are honoured directly by the CLI's `env =` clap attributes.
+ENV PIPELINE_CUDA_VOXELIZER=/app/cuda_voxelizer/build/cuda_voxelizer \
+    PIPELINE_INPUT_DIR=/app/data \
+    RUST_LOG=info
+
+WORKDIR /app
+ENTRYPOINT ["/usr/local/bin/voxel-pipeline"]
+CMD ["run"]

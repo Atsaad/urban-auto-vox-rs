@@ -1,0 +1,11 @@
+[package]
+name = "voxel-binvox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Streaming parser for the binvox 1.0 voxel grid format with a zero-allocation occupied-voxel iterator."
+
+[dependencies]
+thiserror = { workspace = true }
+memmap2 = { workspace = true }

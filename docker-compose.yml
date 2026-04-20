@@ -1,0 +1,141 @@
+# =============================================================================
+# urban-auto-vox-rs — full pipeline (Rust replacement for Urban-Auto-Vox)
+#
+# Equivalent to the upstream Urban-Auto-Vox/docker-compose.yml
+# but with the Python `voxelizer` service swapped for the Rust binary built
+# from this workspace, and the two Python prep services (`create-translate`,
+# `create-index`) folded into the same Rust binary.
+#
+# Service graph:
+#
+#   citygml-tools  ─►  rustgml2obj  ─►  voxelizer  ─┐
+#                                                   │
+#                       postgis  ──────────────────►┘
+#
+# The `voxelizer` service writes both the row-per-voxel CSV and the
+# `voxel` PostGIS table in a single pass. It generates `translate.json`,
+# `index.json`, and `grid_mapping.json` on the fly when missing — so the
+# old Python `create-translate` / `create-index` containers are no longer
+# needed in the graph.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostGIS database — persistent, the same image the Python pipeline used.
+  # ---------------------------------------------------------------------------
+  postgis:
+    image: postgis/postgis:16-3.4
+    container_name: voxel_postgis
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_HOST_PORT:-5434}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-voxel_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - postgis_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - voxel-network
+
+  # ---------------------------------------------------------------------------
+  # Step 1 — CityGML 2.0 → CityGML 3.0 (citygml4j upstream image).
+  # ---------------------------------------------------------------------------
+  citygml-tools:
+    image: citygml4j/citygml-tools:latest
+    container_name: voxel_citygml_tools
+    user: "0"
+    volumes:
+      - ./data/citygml2:/data/input
+      - ./data/citygml3:/data/output
+    command: >
+      upgrade "/data/input/*.gml" -o /data/output
+    networks:
+      - voxel-network
+
+  # ---------------------------------------------------------------------------
+  # Step 2 — CityGML 3.0 → OBJ + per-surface JSON sidecars.
+  # Existing Rust tool (separate repo); we consume its image as-is.
+  # ---------------------------------------------------------------------------
+  rustgml2obj:
+    image: atsaad/rustcitygml2obj:v3.2
+    container_name: voxel_rustgml2obj
+    volumes:
+      - ./data/citygml3:/data/input
+      - ./data/objs:/data/output
+    command: >
+      --input /data/input --output /data/output ${RUSTGML2OBJ_EXTRA_FLAGS:---tbw --add-json}
+    depends_on:
+      citygml-tools:
+        condition: service_completed_successfully
+    networks:
+      - voxel-network
+
+  # ---------------------------------------------------------------------------
+  # Step 3 — translate.json + index.json + grid_mapping.json + CUDA
+  # voxelization + PostGIS ingest. Replaces three Python services.
+  # ---------------------------------------------------------------------------
+  voxelizer:
+    image: atsaad/voxel-pipeline-rs@sha256:11acbec9717442684d533f36daf4dba62facc99a3f3651caaac2bbd4919e4ada
+    pull_policy: always
+    container_name: voxel_pipeline_rs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      # CUDA passthrough
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Logging
+      - RUST_LOG=${RUST_LOG:-info}
+      - RUST_BACKTRACE=${RUST_BACKTRACE:-1}
+      # Pipeline configuration (sourced from .env, see .env.example)
+      - PIPELINE_INPUT_DIR=/app/data
+      - PIPELINE_VOXEL_SIZE=${PIPELINE_VOXEL_SIZE:-0.5}
+      - PIPELINE_DB_SRID=${PIPELINE_DB_SRID:-25832}
+      - PIPELINE_NUM_WORKERS=${PIPELINE_NUM_WORKERS:-8}
+      - PIPELINE_OUTPUT_FORMAT=${PIPELINE_OUTPUT_FORMAT:-csv}
+      - PIPELINE_DB_BATCH_BYTES=${PIPELINE_DB_BATCH_BYTES:-8388608}
+      # Database (host name `postgis` is the compose service)
+      - PIPELINE_DB_USERNAME=${POSTGRES_USER:-postgres}
+      - PIPELINE_DB_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - PIPELINE_DB_HOST=postgis
+      - PIPELINE_DB_PORT=5432
+      - PIPELINE_DB_NAME=${POSTGRES_DB:-voxel_db}
+      - PIPELINE_CUDA_VOXELIZER=/app/cuda_voxelizer/build/cuda_voxelizer
+    volumes:
+      - ./data/objs:/app/data:rw
+    working_dir: /app
+    command: ["run"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f voxel-pipeline || pgrep -f cuda_voxelizer || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      postgis:
+        condition: service_healthy
+      rustgml2obj:
+        condition: service_completed_successfully
+    networks:
+      - voxel-network
+
+volumes:
+  postgis_data:
+    name: voxel_postgis_data
+
+networks:
+  voxel-network:
+    name: voxel-pipeline-network
+    driver: bridge

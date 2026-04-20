@@ -1,0 +1,52 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/voxel-schema",
+    "crates/voxel-binvox",
+    "crates/voxel-postgis",
+    "crates/voxel-pipeline",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+repository = "https://github.com/Atsaad/urban-auto-vox-rs"
+authors = ["Abdullah Saad <at.saad@icloud.com>"]
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+rayon = "1.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "fs", "signal"] }
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+postgres-types = "0.2"
+bytes = "1"
+byteorder = "1.5"
+csv = "1"
+walkdir = "2"
+memmap2 = "0.9"
+indicatif = "0.17"
+
+# Internal crates
+voxel-schema = { path = "crates/voxel-schema" }
+voxel-binvox = { path = "crates/voxel-binvox" }
+voxel-postgis = { path = "crates/voxel-postgis" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+debug = 1
+strip = "debuginfo"
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = 2

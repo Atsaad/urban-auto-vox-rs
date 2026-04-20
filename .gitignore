@@ -1,0 +1,32 @@
+# Rust build output
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Editor caches
+.vscode/
+.idea/
+*.swp
+
+# Local pipeline state
+.env
+data/citygml2/*
+!data/citygml2/.gitkeep
+data/citygml3/*
+!data/citygml3/.gitkeep
+data/objs/*
+!data/objs/.gitkeep
+
+# Docker build logs
+docker-build.log
+*-build.log
+
+# Batch processing artefacts
+output_batches/
+batch_logs/
+batch_processing.log
+batch_failed_tiles.txt
+
+# GUI venv (gui-modern.sh creates this on first launch)
+.venv/
+__pycache__/

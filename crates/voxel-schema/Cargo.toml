@@ -1,0 +1,13 @@
+[package]
+name = "voxel-schema"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Shared serde types + on-disk contracts for the Urban-Auto-Vox Rust pipeline (translate.json, index.json, grid_mapping.json, per-surface sidecars, EWKB PointZ)."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+byteorder = { workspace = true }

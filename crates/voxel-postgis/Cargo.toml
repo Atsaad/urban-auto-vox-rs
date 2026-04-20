@@ -1,0 +1,18 @@
+[package]
+name = "voxel-postgis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "PostGIS writer for the Urban-Auto-Vox voxel schema. Uses COPY FROM STDIN BINARY for bulk loading."
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-postgres = { workspace = true }
+byteorder = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+voxel-schema = { workspace = true }

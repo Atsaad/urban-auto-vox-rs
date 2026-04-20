@@ -1,0 +1,74 @@
+# Drop-in override for Urban-Auto-Vox/docker-compose.yml.
+#
+# Usage from the Urban-Auto-Vox checkout:
+#
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f /path/to/urban-auto-vox-rs/docker/docker-compose.voxel-pipeline-rs.yml \
+#     up voxelizer
+#
+# This file:
+#   * swaps the `voxelizer` service from `atsaad/voxel-pipeline:v7.4` (Python)
+#     to the Rust binary built from `Dockerfile.voxel-pipeline-rs`
+#   * collapses the `create-translate` and `create-index` services into the
+#     single Rust binary, which generates both files on the fly when missing
+#     (so they remain optional pre-steps, not hard dependencies)
+#   * keeps every `PIPELINE_*` environment variable and the `/app/data`
+#     volume mount unchanged so the rest of the compose graph is untouched
+
+services:
+  # The Rust binary handles steps 4–6 (translate.json, index.json, voxelize+
+  # ingest) in a single process, so make `create-translate` / `create-index`
+  # no-ops. Compose still respects `depends_on` ordering.
+  create-translate:
+    image: busybox:latest
+    command: ["true"]
+
+  create-index:
+    image: busybox:latest
+    command: ["true"]
+
+  voxelizer:
+    image: atsaad/voxel-pipeline-rs:0.1.0
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.voxel-pipeline-rs
+    container_name: voxel_pipeline_rs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - RUST_LOG=${RUST_LOG:-info}
+      - PIPELINE_INPUT_DIR=/app/data
+      - PIPELINE_VOXEL_SIZE=${PIPELINE_VOXEL_SIZE:-0.5}
+      - PIPELINE_DB_SRID=${PIPELINE_DB_SRID:-25832}
+      - PIPELINE_NUM_WORKERS=${PIPELINE_NUM_WORKERS:-8}
+      - PIPELINE_OUTPUT_FORMAT=${PIPELINE_OUTPUT_FORMAT:-csv}
+      - PIPELINE_DB_BATCH_BYTES=${PIPELINE_DB_BATCH_BYTES:-8388608}
+      - PIPELINE_DB_USERNAME=${POSTGRES_USER:-postgres}
+      - PIPELINE_DB_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - PIPELINE_DB_HOST=postgis
+      - PIPELINE_DB_PORT=5432
+      - PIPELINE_DB_NAME=${POSTGRES_DB:-voxel_db}
+      - PIPELINE_CUDA_VOXELIZER=/app/cuda_voxelizer/build/cuda_voxelizer
+    volumes:
+      - ./data/objs:/app/data:rw
+    working_dir: /app
+    command: ["run"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f voxel-pipeline || pgrep -f cuda_voxelizer || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      postgis:
+        condition: service_healthy
+      rustgml2obj:
+        condition: service_completed_successfully
