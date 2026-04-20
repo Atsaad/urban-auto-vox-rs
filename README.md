@@ -405,11 +405,13 @@ docker build -f docker/Dockerfile.voxel-pipeline-rs -t voxel-pipeline-rs .
 ### CSV format
 
 ```
-voxel_position,vox_geom,gmlid,building_gmlid,class_gmlid,polygon_gmlid,object_type,X,Y,Z
+voxel_position,vox_geom,x,y,z,element_gmlid,surface_gmlid,building_gmlid,object_type
 ```
 
 - `voxel_position` — 13-digit unique voxel ID ([`voxid::compute`](crates/voxel-pipeline/src/voxid.rs))
 - `vox_geom` — hex-encoded EWKB `Point Z` with SRID ([`ewkb::point_z_ewkb_hex`](crates/voxel-schema/src/ewkb.rs))
+- `x, y, z` — voxel centre coordinates in the configured SRID
+- `element_gmlid`, `surface_gmlid`, `building_gmlid` — CityGML 3.0 identifier hierarchy (see below)
 
 ---
 
@@ -418,32 +420,45 @@ voxel_position,vox_geom,gmlid,building_gmlid,class_gmlid,polygon_gmlid,object_ty
 Applied automatically on first PostGIS write. See
 [`schema::apply_schema`](crates/voxel-postgis/src/schema.rs).
 
+The identifier columns follow the CityGML 3.0 containment hierarchy:
+
+| Column            | Meaning |
+|-------------------|---------|
+| `building_gmlid`  | `Building` gml:id (top level) |
+| `surface_gmlid`   | Thematic surface gml:id (`RoofSurface`, `WallSurface`, etc.) |
+| `element_gmlid`   | Geometry element gml:id (Polygon / SurfaceMember — most specific) |
+
 ```sql
 CREATE TABLE object (
-    gmlid          TEXT PRIMARY KEY,
-    object_type    TEXT,
+    element_gmlid  TEXT PRIMARY KEY,
+    surface_gmlid  TEXT,
     building_gmlid TEXT
 );
 
 CREATE TABLE object_class (
-    gmlid          TEXT PRIMARY KEY,
-    class_gmlid    TEXT,
-    object_type    TEXT
+    id             SERIAL PRIMARY KEY,
+    object_type    TEXT,
+    element_gmlid  TEXT REFERENCES object(element_gmlid) ON DELETE CASCADE,
+    surface_gmlid  TEXT,
+    building_gmlid TEXT
 );
 
 CREATE TABLE voxel (
-    voxel_position BIGINT,
-    vox_geom       GEOMETRY(POINTZ, <PIPELINE_DB_SRID>),
-    gmlid          TEXT,
-    building_gmlid TEXT,
-    class_gmlid    TEXT,
-    polygon_gmlid  TEXT,
-    object_type    TEXT
+    id             SERIAL PRIMARY KEY,
+    voxel_position BIGINT NOT NULL,
+    vox_geom       GEOMETRY(PointZ, <PIPELINE_DB_SRID>),
+    x              DOUBLE PRECISION NOT NULL,
+    y              DOUBLE PRECISION NOT NULL,
+    z              DOUBLE PRECISION NOT NULL,
+    element_gmlid  TEXT REFERENCES object(element_gmlid) ON DELETE CASCADE,
+    surface_gmlid  TEXT,
+    building_gmlid TEXT
 );
 
-CREATE INDEX voxel_position_idx ON voxel (voxel_position);
-CREATE INDEX voxel_gmlid_idx    ON voxel USING hash (gmlid);
-CREATE INDEX voxel_geom_idx     ON voxel USING gist (vox_geom);
+CREATE INDEX idx_voxel_geom           ON voxel USING GIST(vox_geom);
+CREATE INDEX idx_voxel_element_gmlid  ON voxel(element_gmlid);
+CREATE INDEX idx_voxel_surface_gmlid  ON voxel(surface_gmlid);
+CREATE INDEX idx_voxel_building_gmlid ON voxel(building_gmlid);
 ```
 
 `object` and `object_class` rows are upserted per OBJ via

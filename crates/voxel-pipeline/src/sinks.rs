@@ -1,9 +1,11 @@
 //! Output sinks.
 //!
-//! The CSV sink writes the same schema as the Python pipeline:
+//! The CSV sink writes one row per occupied voxel, with identifier
+//! columns following the CityGML 3.0 hierarchy (building → surface →
+//! element):
 //!
 //! ```text
-//! voxel_position,vox_geom,gmlid,building_gmlid,class_gmlid,polygon_gmlid,object_type,X,Y,Z
+//! voxel_position,vox_geom,x,y,z,element_gmlid,surface_gmlid,building_gmlid,object_type
 //! ```
 //!
 //! The PostGIS sink wraps a [`voxel_postgis::VoxelCopyWriter`] and its
@@ -25,9 +27,9 @@ pub struct VoxelPayload<'a> {
     pub y: f64,
     pub z: f64,
     pub srid: u32,
-    pub polygon_gml_id: &'a str,
-    pub building_gml_id: &'a str,
-    pub class_gml_id: &'a str,
+    pub element_gmlid: &'a str,
+    pub surface_gmlid: &'a str,
+    pub building_gmlid: &'a str,
     pub object_type: &'a str,
 }
 
@@ -47,14 +49,13 @@ impl CsvSink {
         w.write_record([
             "voxel_position",
             "vox_geom",
-            "gmlid",
+            "x",
+            "y",
+            "z",
+            "element_gmlid",
+            "surface_gmlid",
             "building_gmlid",
-            "class_gmlid",
-            "polygon_gmlid",
             "object_type",
-            "X",
-            "Y",
-            "Z",
         ])?;
         Ok(Self {
             inner: Mutex::new(w),
@@ -71,14 +72,13 @@ impl CsvSink {
         w.write_record([
             vp.as_str(),
             hex.as_str(),
-            row.polygon_gml_id,
-            row.building_gml_id,
-            row.class_gml_id,
-            row.polygon_gml_id,
-            row.object_type,
             xs.as_str(),
             ys.as_str(),
             zs.as_str(),
+            row.element_gmlid,
+            row.surface_gmlid,
+            row.building_gmlid,
+            row.object_type,
         ])?;
         Ok(())
     }

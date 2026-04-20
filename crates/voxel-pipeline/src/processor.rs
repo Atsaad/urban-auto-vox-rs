@@ -327,9 +327,9 @@ async fn ingest(
                             y: row.y,
                             z: row.z,
                             srid: row.srid,
-                            polygon_gml_id: row.polygon_gml_id,
-                            building_gml_id: row.building_gml_id,
-                            class_gml_id: row.class_gml_id,
+                            element_gmlid: row.element_gmlid,
+                            surface_gmlid: row.surface_gmlid,
+                            building_gmlid: row.building_gmlid,
                         };
                         writer.write_row(&vr).await?;
                         copied_batch += 1;
@@ -339,16 +339,16 @@ async fn ingest(
                         }
                     }
                     RowMsg::Object {
-                        polygon_gml_id,
-                        building_gml_id,
-                        class_gml_id,
+                        element_gmlid,
+                        surface_gmlid,
+                        building_gmlid,
                         object_type,
                     } => {
                         upsert_object_and_class(
                             &upsert_client,
-                            &polygon_gml_id,
-                            &building_gml_id,
-                            &class_gml_id,
+                            &element_gmlid,
+                            &surface_gmlid,
+                            &building_gmlid,
                             &object_type,
                         )
                         .await?;
@@ -459,9 +459,9 @@ async fn ingest(
 enum RowMsg {
     Row(OwnedVoxelRow),
     Object {
-        polygon_gml_id: String,
-        building_gml_id: String,
-        class_gml_id: String,
+        element_gmlid: String,
+        surface_gmlid: String,
+        building_gmlid: String,
         object_type: String,
     },
 }
@@ -473,9 +473,9 @@ struct OwnedVoxelRow {
     y: f64,
     z: f64,
     srid: u32,
-    polygon_gml_id: String,
-    building_gml_id: String,
-    class_gml_id: String,
+    element_gmlid: String,
+    surface_gmlid: String,
+    building_gmlid: String,
 }
 
 fn process_single_binvox(
@@ -521,29 +521,29 @@ fn process_single_binvox(
 
     let [vx, vy, vz] = header.voxel_size_axes();
 
-    // Semantic lookup.
-    let (object_type, _parent_id, polygon_gml_id_from_index) = match index {
+    // Semantic lookup (object_type only; gml_ids come from the sidecar).
+    let object_type = match index {
         Some(idx) => lookup_semantics(idx, &obj_key, grid),
-        None => ("Unknown".to_string(), None, None),
+        None => "Unknown".to_string(),
     };
 
-    // Per-surface sidecar IDs (building / class / polygon).
+    // Per-surface sidecar IDs (CityGML 3.0: building → surface → element).
     let sidecar_path = input_dir.join(format!("{obj_key}.json"));
     let ids = SurfaceSidecar::load(&sidecar_path)
         .map(|s| s.resolved_ids())
         .unwrap_or_else(|_| ResolvedIds::unknown());
 
-    let polygon_gml_id = ids.polygon_gml_id.clone();
-    let building_gml_id = ids.building_gml_id.clone();
-    let class_gml_id = ids.class_gml_id.clone();
+    let element_gmlid = ids.element_gmlid.clone();
+    let surface_gmlid = ids.surface_gmlid.clone();
+    let building_gmlid = ids.building_gmlid.clone();
 
     // One (object, object_class) upsert per file, piggy-backed through
     // the same channel so it stays serialised against the COPY.
     if let Some(tx) = pg_tx {
         let _ = tx.blocking_send(RowMsg::Object {
-            polygon_gml_id: polygon_gml_id.clone(),
-            building_gml_id: building_gml_id.clone(),
-            class_gml_id: class_gml_id.clone(),
+            element_gmlid: element_gmlid.clone(),
+            surface_gmlid: surface_gmlid.clone(),
+            building_gmlid: building_gmlid.clone(),
             object_type: object_type.clone(),
         });
     }
@@ -564,9 +564,9 @@ fn process_single_binvox(
                 y,
                 z,
                 srid,
-                polygon_gml_id: &polygon_gml_id,
-                building_gml_id: &building_gml_id,
-                class_gml_id: &class_gml_id,
+                element_gmlid: &element_gmlid,
+                surface_gmlid: &surface_gmlid,
+                building_gmlid: &building_gmlid,
                 object_type: &object_type,
             })?;
         }
@@ -577,12 +577,11 @@ fn process_single_binvox(
                 y,
                 z,
                 srid,
-                polygon_gml_id: polygon_gml_id.clone(),
-                building_gml_id: building_gml_id.clone(),
-                class_gml_id: class_gml_id.clone(),
+                element_gmlid: element_gmlid.clone(),
+                surface_gmlid: surface_gmlid.clone(),
+                building_gmlid: building_gmlid.clone(),
             }));
         }
-        let _ = polygon_gml_id_from_index.as_ref(); // keep the lookup happy
         emitted += 1;
         emitted_batch += 1;
         if emitted_batch >= 4096 {
@@ -604,30 +603,17 @@ fn parse_grid_suffix(fname: &str) -> Option<u32> {
     grid_s.parse().ok()
 }
 
-fn lookup_semantics(
-    index: &IndexFile,
-    obj_key: &str,
-    _grid: u32,
-) -> (String, Option<String>, Option<String>) {
-    // Matches the Python resolution order: exact key, then basename fallback.
+fn lookup_semantics(index: &IndexFile, obj_key: &str, _grid: u32) -> String {
+    // Exact key first, then basename fallback.
     let entry = index
         .get_entry(&format!("{obj_key}.obj"))
         .or_else(|| index.get_entry(obj_key));
     match entry {
-        Some(e) => {
-            // Promote `class` over `tag` when present, matching the Python
-            // code path in `cuda_vox_params`.
-            let object_type = match (e.class.clone(), strip_namespace(&e.tag)) {
-                (Some(cls), _) => cls,
-                (None, tag) => tag,
-            };
-            (
-                object_type,
-                e.parent_id.first(),
-                e.gml_id.first(),
-            )
-        }
-        None => ("Unknown".to_string(), None, None),
+        Some(e) => match (e.class.clone(), strip_namespace(&e.tag)) {
+            (Some(cls), _) => cls,
+            (None, tag) => tag,
+        },
+        None => "Unknown".to_string(),
     }
 }
 

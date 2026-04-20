@@ -20,10 +20,12 @@
 //! ```text
 //! voxel_position BIGINT
 //! vox_geom       GEOMETRY(PointZ, <SRID>)   (sent as the raw EWKB bytes)
-//! gmlid          TEXT
+//! x              DOUBLE PRECISION
+//! y              DOUBLE PRECISION
+//! z              DOUBLE PRECISION
+//! element_gmlid  TEXT
+//! surface_gmlid  TEXT
 //! building_gmlid TEXT
-//! class_gmlid    TEXT
-//! polygon_gmlid  TEXT
 //! ```
 //!
 //! PostGIS' `geometry` type accepts the raw EWKB bytes as its binary wire
@@ -39,7 +41,7 @@ use tracing::debug;
 use crate::{PostgisError, VoxelRow};
 
 const SIGNATURE: &[u8; 11] = b"PGCOPY\n\xff\r\n\0";
-const FIELD_COUNT: i16 = 6;
+const FIELD_COUNT: i16 = 8;
 
 /// Streaming writer that owns a `COPY ... FROM STDIN BINARY` sink and
 /// buffers encoded tuples before flushing to the server.
@@ -57,8 +59,8 @@ impl VoxelCopyWriter {
     pub async fn begin(client: &Client, flush_threshold: usize) -> Result<Self, PostgisError> {
         let sink: CopyInSink<bytes::Bytes> = client
             .copy_in(
-                "COPY voxel (voxel_position, vox_geom, gmlid, \
-                             building_gmlid, class_gmlid, polygon_gmlid) \
+                "COPY voxel (voxel_position, vox_geom, x, y, z, \
+                             element_gmlid, surface_gmlid, building_gmlid) \
                  FROM STDIN (FORMAT BINARY)",
             )
             .await?;
@@ -89,11 +91,15 @@ impl VoxelCopyWriter {
         self.buf.put_u32(geom.len() as u32);
         self.buf.put_slice(&geom);
 
-        // Four TEXT columns
-        put_text(&mut self.buf, &row.polygon_gml_id);
-        put_text(&mut self.buf, &row.building_gml_id);
-        put_text(&mut self.buf, &row.class_gml_id);
-        put_text(&mut self.buf, &row.polygon_gml_id);
+        // x, y, z DOUBLE PRECISION
+        put_double(&mut self.buf, row.x);
+        put_double(&mut self.buf, row.y);
+        put_double(&mut self.buf, row.z);
+
+        // Three TEXT columns — CityGML 3.0 hierarchy
+        put_text(&mut self.buf, &row.element_gmlid);
+        put_text(&mut self.buf, &row.surface_gmlid);
+        put_text(&mut self.buf, &row.building_gmlid);
 
         self.rows_pending += 1;
         self.rows_total += 1;
@@ -139,6 +145,12 @@ impl VoxelCopyWriter {
 fn put_bigint(buf: &mut BytesMut, v: i64) {
     buf.put_u32(8);
     buf.put_i64(v);
+}
+
+#[inline]
+fn put_double(buf: &mut BytesMut, v: f64) {
+    buf.put_u32(8);
+    buf.put_f64(v);
 }
 
 #[inline]

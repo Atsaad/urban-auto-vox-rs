@@ -1,8 +1,9 @@
 //! Per-surface sidecar JSON written by `rustcitygml2obj --add-json`.
 //!
 //! Emitted once per OBJ, co-located with it (`foo.obj` + `foo.json`). The
-//! voxelizer reads this to populate the three gml_id columns in the output
-//! schema (building / class / polygon).
+//! voxelizer reads this to populate the three CityGML 3.0 identifier
+//! columns in the output schema: building → surface (thematic) → element
+//! (polygon/geometry).
 
 use std::path::Path;
 
@@ -38,19 +39,19 @@ impl SurfaceSidecar {
         Ok(serde_json::from_reader(std::io::BufReader::new(f))?)
     }
 
-    /// Resolve the three GML IDs used by the voxel schema, substituting
-    /// `"UNKNOWN"` when a field is absent — matching the Python fallback.
+    /// Resolve the three CityGML 3.0 identifiers used downstream,
+    /// substituting `"UNKNOWN"` when a field is absent.
     pub fn resolved_ids(&self) -> ResolvedIds {
         ResolvedIds {
-            building_gml_id: self
+            building_gmlid: self
                 .building_id
                 .clone()
                 .unwrap_or_else(|| "UNKNOWN".into()),
-            class_gml_id: self
+            surface_gmlid: self
                 .class_gml_id
                 .clone()
                 .unwrap_or_else(|| "UNKNOWN".into()),
-            polygon_gml_id: self
+            element_gmlid: self
                 .polygon_gml_id
                 .clone()
                 .unwrap_or_else(|| "UNKNOWN".into()),
@@ -58,19 +59,25 @@ impl SurfaceSidecar {
     }
 }
 
+/// CityGML 3.0 identifier hierarchy for a single surface:
+/// Building → ThematicSurface → geometry element.
 #[derive(Debug, Clone)]
 pub struct ResolvedIds {
-    pub building_gml_id: String,
-    pub class_gml_id: String,
-    pub polygon_gml_id: String,
+    /// Top-level `Building` gml:id.
+    pub building_gmlid: String,
+    /// Thematic surface gml:id (e.g. a `RoofSurface`, `WallSurface`).
+    pub surface_gmlid: String,
+    /// Geometry element gml:id (the Polygon / SurfaceMember — the
+    /// most specific identifier, typically the longest).
+    pub element_gmlid: String,
 }
 
 impl ResolvedIds {
     pub fn unknown() -> Self {
         Self {
-            building_gml_id: "UNKNOWN".into(),
-            class_gml_id: "UNKNOWN".into(),
-            polygon_gml_id: "UNKNOWN".into(),
+            building_gmlid: "UNKNOWN".into(),
+            surface_gmlid: "UNKNOWN".into(),
+            element_gmlid: "UNKNOWN".into(),
         }
     }
 }
