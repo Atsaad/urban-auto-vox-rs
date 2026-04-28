@@ -18,14 +18,13 @@
 //! The target columns we emit, in order, are:
 //!
 //! ```text
-//! voxel_position BIGINT
-//! vox_geom       GEOMETRY(PointZ, <SRID>)   (sent as the raw EWKB bytes)
+//! building_gmlid TEXT
+//! surface_gmlid  TEXT
+//! surface_class  SMALLINT
 //! x              DOUBLE PRECISION
 //! y              DOUBLE PRECISION
 //! z              DOUBLE PRECISION
-//! element_gmlid  TEXT
-//! surface_gmlid  TEXT
-//! building_gmlid TEXT
+//! vox_geom       GEOMETRY(PointZ, <SRID>)   (sent as the raw EWKB bytes)
 //! ```
 //!
 //! PostGIS' `geometry` type accepts the raw EWKB bytes as its binary wire
@@ -41,7 +40,7 @@ use tracing::debug;
 use crate::{PostgisError, VoxelRow};
 
 const SIGNATURE: &[u8; 11] = b"PGCOPY\n\xff\r\n\0";
-const FIELD_COUNT: i16 = 8;
+const FIELD_COUNT: i16 = 7;
 
 /// Streaming writer that owns a `COPY ... FROM STDIN BINARY` sink and
 /// buffers encoded tuples before flushing to the server.
@@ -59,8 +58,8 @@ impl VoxelCopyWriter {
     pub async fn begin(client: &Client, flush_threshold: usize) -> Result<Self, PostgisError> {
         let sink: CopyInSink<bytes::Bytes> = client
             .copy_in(
-                "COPY voxel (voxel_position, vox_geom, x, y, z, \
-                             element_gmlid, surface_gmlid, building_gmlid) \
+                "COPY voxel (building_gmlid, surface_gmlid, surface_class, \
+                             x, y, z, vox_geom) \
                  FROM STDIN (FORMAT BINARY)",
             )
             .await?;
@@ -83,23 +82,22 @@ impl VoxelCopyWriter {
     pub async fn write_row(&mut self, row: &VoxelRow) -> Result<(), PostgisError> {
         self.buf.put_i16(FIELD_COUNT);
 
-        // voxel_position BIGINT
-        put_bigint(&mut self.buf, row.voxel_position);
+        // building_gmlid, surface_gmlid TEXT
+        put_text(&mut self.buf, &row.building_gmlid);
+        put_text(&mut self.buf, &row.surface_gmlid);
 
-        // vox_geom GEOMETRY — send raw EWKB (PostGIS accepts this directly)
-        let geom = row.ewkb();
-        self.buf.put_u32(geom.len() as u32);
-        self.buf.put_slice(&geom);
+        // surface_class SMALLINT
+        put_smallint(&mut self.buf, row.surface_class);
 
         // x, y, z DOUBLE PRECISION
         put_double(&mut self.buf, row.x);
         put_double(&mut self.buf, row.y);
         put_double(&mut self.buf, row.z);
 
-        // Three TEXT columns — CityGML 3.0 hierarchy
-        put_text(&mut self.buf, &row.element_gmlid);
-        put_text(&mut self.buf, &row.surface_gmlid);
-        put_text(&mut self.buf, &row.building_gmlid);
+        // vox_geom GEOMETRY — send raw EWKB (PostGIS accepts this directly)
+        let geom = row.ewkb();
+        self.buf.put_u32(geom.len() as u32);
+        self.buf.put_slice(&geom);
 
         self.rows_pending += 1;
         self.rows_total += 1;
@@ -142,9 +140,9 @@ impl VoxelCopyWriter {
 }
 
 #[inline]
-fn put_bigint(buf: &mut BytesMut, v: i64) {
-    buf.put_u32(8);
-    buf.put_i64(v);
+fn put_smallint(buf: &mut BytesMut, v: i16) {
+    buf.put_u32(2);
+    buf.put_i16(v);
 }
 
 #[inline]

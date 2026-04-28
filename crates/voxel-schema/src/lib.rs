@@ -13,7 +13,7 @@ pub mod translate;
 pub use ewkb::{point_z_ewkb_bytes, point_z_ewkb_hex};
 pub use grid_mapping::{GridMappingFile, MIN_GRID, MAX_GRID};
 pub use index::{namespaced_tag, IndexEntry, IndexFile, Crs, BUILDING_SURFACE_TYPES};
-pub use surface::SurfaceSidecar;
+pub use surface::{surface_class_id, SurfaceSidecar};
 pub use translate::{GlobalBbox, PerFileBbox, TranslateFile};
 
 #[derive(Debug, thiserror::Error)]
