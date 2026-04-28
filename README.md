@@ -420,50 +420,75 @@ voxel_position,vox_geom,x,y,z,element_gmlid,surface_gmlid,building_gmlid,object_
 Applied automatically on first PostGIS write. See
 [`schema::apply_schema`](crates/voxel-postgis/src/schema.rs).
 
-The identifier columns follow the CityGML 3.0 containment hierarchy:
+Two tables, decoupled by design:
 
-| Column            | Meaning |
-|-------------------|---------|
-| `building_gmlid`  | `Building` gml:id (top level) |
-| `surface_gmlid`   | Thematic surface gml:id (`RoofSurface`, `WallSurface`, etc.) |
-| `element_gmlid`   | Geometry element gml:id (Polygon / SurfaceMember — most specific) |
+* **`building`** — created by the pipeline but **not written to it**. Loaded
+  once, out-of-band, from `building_metadata.csv` via `psql \COPY`.
+  Holds the building-level conditioning attributes (function, roof type,
+  height, storeys, address, etc.) used to build the diffusion model's
+  conditioning vectors at training time.
+* **`voxel`** — the only table the pipeline writes. Flat and denormalised:
+  one row per occupied voxel with `(building_gmlid, surface_gmlid,
+  surface_class, x, y, z, vox_geom)`. No FK to `building` — ingestion
+  order is unconstrained, and a 300M-row COPY pays no per-row FK
+  validation cost.
+
+`surface_class` is a `SMALLINT` mapping of the CityGML thematic surface:
+
+| Class | Meaning |
+|------:|---------|
+| 0 | Unknown / air |
+| 1 | WallSurface |
+| 2 | RoofSurface |
+| 3 | GroundSurface |
+| 4 | OuterCeilingSurface |
+| 5 | ClosureSurface |
 
 ```sql
-CREATE TABLE object (
-    element_gmlid  TEXT PRIMARY KEY,
-    surface_gmlid  TEXT,
-    building_gmlid TEXT
+CREATE TABLE building (
+    building_gmlid       TEXT PRIMARY KEY,
+    tile_id              TEXT,
+    function_code        TEXT,
+    function_label       TEXT,
+    roof_type_code       TEXT,
+    roof_type_label      TEXT,
+    measured_height      REAL,
+    storeys_above_ground SMALLINT,
+    storeys_source       TEXT,
+    year_of_construction SMALLINT,
+    gemeindeschluessel   TEXT,
+    hoehe_dach           REAL,
+    hoehe_grund          REAL,
+    niedrigste_traufe    REAL,
+    city                 TEXT,
+    postal_code          TEXT,
+    street_name          TEXT,
+    house_number         TEXT,
+    source               TEXT
 );
-
-CREATE TABLE object_class (
-    id             SERIAL PRIMARY KEY,
-    object_type    TEXT,
-    element_gmlid  TEXT REFERENCES object(element_gmlid) ON DELETE CASCADE,
-    surface_gmlid  TEXT,
-    building_gmlid TEXT
-);
+CREATE INDEX idx_building_gemeindeschluessel ON building (gemeindeschluessel);
+CREATE INDEX idx_building_function_code      ON building (function_code);
 
 CREATE TABLE voxel (
-    id             SERIAL PRIMARY KEY,
-    voxel_position BIGINT NOT NULL,
-    vox_geom       GEOMETRY(PointZ, <PIPELINE_DB_SRID>),
+    building_gmlid TEXT             NOT NULL,
+    surface_gmlid  TEXT,
+    surface_class  SMALLINT         NOT NULL,
     x              DOUBLE PRECISION NOT NULL,
     y              DOUBLE PRECISION NOT NULL,
     z              DOUBLE PRECISION NOT NULL,
-    element_gmlid  TEXT REFERENCES object(element_gmlid) ON DELETE CASCADE,
-    surface_gmlid  TEXT,
-    building_gmlid TEXT
+    vox_geom       GEOMETRY(PointZ, <PIPELINE_DB_SRID>)
 );
-
-CREATE INDEX idx_voxel_geom           ON voxel USING GIST(vox_geom);
-CREATE INDEX idx_voxel_element_gmlid  ON voxel(element_gmlid);
-CREATE INDEX idx_voxel_surface_gmlid  ON voxel(surface_gmlid);
-CREATE INDEX idx_voxel_building_gmlid ON voxel(building_gmlid);
+CREATE INDEX idx_voxel_building_gmlid ON voxel (building_gmlid);
+CREATE INDEX idx_voxel_geom           ON voxel USING GIST (vox_geom);
 ```
 
-`object` and `object_class` rows are upserted per OBJ via
-`INSERT ... ON CONFLICT`. Voxel rows use `COPY ... FROM STDIN (FORMAT BINARY)`
-for high-throughput ingestion.
+Voxel rows are written via `COPY voxel FROM STDIN (FORMAT BINARY)` for
+high-throughput ingestion. Load `building` once after schema apply:
+
+```bash
+psql -h <host> -p <port> -U <user> -d <db> \
+  -c "\COPY building FROM 'building_metadata.csv' CSV HEADER"
+```
 
 ---
 

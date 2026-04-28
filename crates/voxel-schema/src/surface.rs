@@ -81,3 +81,18 @@ impl ResolvedIds {
         }
     }
 }
+
+/// Map a CityGML thematic surface name to the integer class id stored on
+/// each voxel row. The numbering matches the diffusion training labels —
+/// `0` is reserved for air / unknown so that an empty cell in a generated
+/// tensor naturally encodes "no surface here".
+pub fn surface_class_id(role: &str) -> i16 {
+    match role {
+        "WallSurface" => 1,
+        "RoofSurface" => 2,
+        "GroundSurface" => 3,
+        "OuterCeilingSurface" => 4,
+        "ClosureSurface" => 5,
+        _ => 0,
+    }
+}

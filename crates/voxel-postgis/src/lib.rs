@@ -83,21 +83,22 @@ pub async fn connect(cfg: &PgConnectionConfig) -> Result<Client, PostgisError> {
     Ok(client)
 }
 
-/// One voxel row, schema-mirrored from `voxel` / `object` / `object_class`.
+/// One voxel row in the flat `voxel` table.
 ///
-/// Identifier columns follow the CityGML 3.0 hierarchy: `building_gmlid`
-/// (top) → `surface_gmlid` (thematic surface) → `element_gmlid`
-/// (geometry — the longest, most specific ID).
+/// `building_gmlid` joins (without FK) to the `building` table loaded
+/// from `building_metadata.csv`. `surface_gmlid` is the thematic-surface
+/// gml:id from CityGML — kept for traceability, not required by the
+/// diffusion pipeline. `surface_class` is the integer mapping produced
+/// by [`voxel_schema::surface::surface_class_id`].
 #[derive(Debug, Clone)]
 pub struct VoxelRow {
-    pub voxel_position: i64,
     pub x: f64,
     pub y: f64,
     pub z: f64,
     pub srid: u32,
+    pub surface_class: i16,
     pub building_gmlid: String,
     pub surface_gmlid: String,
-    pub element_gmlid: String,
 }
 
 impl VoxelRow {

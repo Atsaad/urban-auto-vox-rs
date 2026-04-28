@@ -82,7 +82,7 @@ services:
   # voxelization + PostGIS ingest. Replaces three Python services.
   # ---------------------------------------------------------------------------
   voxelizer:
-    image: atsaad/voxel-pipeline-rs:0.2.0
+    image: atsaad/voxel-pipeline-rs:0.3.0
     pull_policy: always
     container_name: voxel_pipeline_rs
     deploy:

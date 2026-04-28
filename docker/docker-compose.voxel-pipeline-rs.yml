@@ -29,7 +29,7 @@ services:
     command: ["true"]
 
   voxelizer:
-    image: atsaad/voxel-pipeline-rs:0.1.0
+    image: atsaad/voxel-pipeline-rs:0.3.0
     build:
       context: ..
       dockerfile: docker/Dockerfile.voxel-pipeline-rs

@@ -1,17 +1,15 @@
 //! Output sinks.
 //!
-//! The CSV sink writes one row per occupied voxel, with identifier
-//! columns following the CityGML 3.0 hierarchy (building → surface →
-//! element):
+//! The CSV sink writes one row per occupied voxel, mirroring the flat
+//! `voxel` table column layout:
 //!
 //! ```text
-//! voxel_position,vox_geom,x,y,z,element_gmlid,surface_gmlid,building_gmlid,object_type
+//! building_gmlid,surface_gmlid,surface_class,x,y,z,vox_geom
 //! ```
 //!
-//! The PostGIS sink wraps a [`voxel_postgis::VoxelCopyWriter`] and its
-//! matching `object` / `object_class` upserts. Both sinks accept streamed
-//! rows so the whole pipeline stays memory-bounded regardless of grid
-//! count.
+//! The PostGIS sink wraps a [`voxel_postgis::VoxelCopyWriter`]. Both
+//! sinks accept streamed rows so the whole pipeline stays memory-bounded
+//! regardless of grid count.
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -22,15 +20,13 @@ use anyhow::Result;
 use voxel_schema::ewkb::point_z_ewkb_hex;
 
 pub struct VoxelPayload<'a> {
-    pub voxel_position: i64,
     pub x: f64,
     pub y: f64,
     pub z: f64,
     pub srid: u32,
-    pub element_gmlid: &'a str,
+    pub surface_class: i16,
     pub surface_gmlid: &'a str,
     pub building_gmlid: &'a str,
-    pub object_type: &'a str,
 }
 
 /// Thread-safe streaming CSV writer. Rows are serialised under a mutex
@@ -47,15 +43,13 @@ impl CsvSink {
             .has_headers(false)
             .from_writer(bw);
         w.write_record([
-            "voxel_position",
-            "vox_geom",
+            "building_gmlid",
+            "surface_gmlid",
+            "surface_class",
             "x",
             "y",
             "z",
-            "element_gmlid",
-            "surface_gmlid",
-            "building_gmlid",
-            "object_type",
+            "vox_geom",
         ])?;
         Ok(Self {
             inner: Mutex::new(w),
@@ -64,21 +58,19 @@ impl CsvSink {
 
     pub fn write(&self, row: &VoxelPayload<'_>) -> Result<()> {
         let hex = point_z_ewkb_hex(row.x, row.y, row.z, row.srid);
-        let vp = row.voxel_position.to_string();
+        let cls = row.surface_class.to_string();
         let xs = ryu_f64(row.x);
         let ys = ryu_f64(row.y);
         let zs = ryu_f64(row.z);
         let mut w = self.inner.lock().unwrap();
         w.write_record([
-            vp.as_str(),
-            hex.as_str(),
+            row.building_gmlid,
+            row.surface_gmlid,
+            cls.as_str(),
             xs.as_str(),
             ys.as_str(),
             zs.as_str(),
-            row.element_gmlid,
-            row.surface_gmlid,
-            row.building_gmlid,
-            row.object_type,
+            hex.as_str(),
         ])?;
         Ok(())
     }

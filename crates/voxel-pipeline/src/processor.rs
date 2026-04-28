@@ -27,18 +27,15 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use voxel_binvox::BinvoxFile;
-use voxel_postgis::{
-    apply_schema, connect, schema::upsert_object_and_class, PgConnectionConfig, VoxelCopyWriter,
-};
+use voxel_postgis::{apply_schema, connect, PgConnectionConfig, VoxelCopyWriter};
 use voxel_schema::grid_mapping::GridMappingFile;
 use voxel_schema::index::IndexFile;
-use voxel_schema::surface::{ResolvedIds, SurfaceSidecar};
+use voxel_schema::surface::{surface_class_id, ResolvedIds, SurfaceSidecar};
 use voxel_schema::translate::{PerFileBbox, TranslateFile};
 
 use crate::sinks::{CsvSink, VoxelPayload};
 use crate::swap;
 use crate::voxelizer::{relocate_binvox, voxelize_batch, VoxelizeBatchConfig, VoxelizeStatus};
-use crate::voxid;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum OutputFormat {
@@ -286,7 +283,7 @@ async fn ingest(
 
     // ---- Optional PostGIS sink with a writer task.
     let mut pg_handle: Option<JoinHandle<Result<u64>>> = None;
-    let mut pg_tx: Option<mpsc::Sender<RowMsg>> = None;
+    let mut pg_tx: Option<mpsc::Sender<OwnedVoxelRow>> = None;
     let copied_total = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let pg_client = if args.output_format.wants_postgis() {
         match args.db.to_conn() {
@@ -305,54 +302,29 @@ async fn ingest(
     };
 
     if let Some(client_arc) = pg_client.clone() {
-        let (tx, mut rx) = mpsc::channel::<RowMsg>(4096);
+        let (tx, mut rx) = mpsc::channel::<OwnedVoxelRow>(4096);
         pg_tx = Some(tx);
         let flush_bytes = args.db_flush_bytes;
         let copied_counter = Arc::clone(&copied_total);
-        // PostgreSQL forbids regular queries while a COPY stream is
-        // active on the same connection, so open a dedicated connection
-        // for the object/class upserts.
-        let upsert_cfg = args.db.to_conn().expect("already validated");
-        let upsert_client = connect(&upsert_cfg).await?;
         let handle: JoinHandle<Result<u64>> = tokio::spawn(async move {
             let client = client_arc.lock().await;
             let mut writer = VoxelCopyWriter::begin(&client, flush_bytes).await?;
             let mut copied_batch: u64 = 0;
-            while let Some(msg) = rx.recv().await {
-                match msg {
-                    RowMsg::Row(row) => {
-                        let vr = voxel_postgis::VoxelRow {
-                            voxel_position: row.voxel_position,
-                            x: row.x,
-                            y: row.y,
-                            z: row.z,
-                            srid: row.srid,
-                            element_gmlid: row.element_gmlid,
-                            surface_gmlid: row.surface_gmlid,
-                            building_gmlid: row.building_gmlid,
-                        };
-                        writer.write_row(&vr).await?;
-                        copied_batch += 1;
-                        if copied_batch >= 4096 {
-                            copied_counter.fetch_add(copied_batch, std::sync::atomic::Ordering::Relaxed);
-                            copied_batch = 0;
-                        }
-                    }
-                    RowMsg::Object {
-                        element_gmlid,
-                        surface_gmlid,
-                        building_gmlid,
-                        object_type,
-                    } => {
-                        upsert_object_and_class(
-                            &upsert_client,
-                            &element_gmlid,
-                            &surface_gmlid,
-                            &building_gmlid,
-                            &object_type,
-                        )
-                        .await?;
-                    }
+            while let Some(row) = rx.recv().await {
+                let vr = voxel_postgis::VoxelRow {
+                    x: row.x,
+                    y: row.y,
+                    z: row.z,
+                    srid: row.srid,
+                    surface_class: row.surface_class,
+                    surface_gmlid: row.surface_gmlid,
+                    building_gmlid: row.building_gmlid,
+                };
+                writer.write_row(&vr).await?;
+                copied_batch += 1;
+                if copied_batch >= 4096 {
+                    copied_counter.fetch_add(copied_batch, std::sync::atomic::Ordering::Relaxed);
+                    copied_batch = 0;
                 }
             }
             if copied_batch > 0 {
@@ -456,24 +428,12 @@ async fn ingest(
 }
 
 #[derive(Debug)]
-enum RowMsg {
-    Row(OwnedVoxelRow),
-    Object {
-        element_gmlid: String,
-        surface_gmlid: String,
-        building_gmlid: String,
-        object_type: String,
-    },
-}
-
-#[derive(Debug)]
 struct OwnedVoxelRow {
-    voxel_position: i64,
     x: f64,
     y: f64,
     z: f64,
     srid: u32,
-    element_gmlid: String,
+    surface_class: i16,
     surface_gmlid: String,
     building_gmlid: String,
 }
@@ -485,7 +445,7 @@ fn process_single_binvox(
     translate: &TranslateFile,
     index: Option<&IndexFile>,
     csv: Option<&CsvSink>,
-    pg_tx: Option<&mpsc::Sender<RowMsg>>,
+    pg_tx: Option<&mpsc::Sender<OwnedVoxelRow>>,
     emitted_counter: &std::sync::atomic::AtomicU64,
 ) -> Result<u64> {
     let bv = BinvoxFile::open(bv_path)
@@ -521,32 +481,27 @@ fn process_single_binvox(
 
     let [vx, vy, vz] = header.voxel_size_axes();
 
-    // Semantic lookup (object_type only; gml_ids come from the sidecar).
-    let object_type = match index {
-        Some(idx) => lookup_semantics(idx, &obj_key, grid),
-        None => "Unknown".to_string(),
-    };
-
-    // Per-surface sidecar IDs (CityGML 3.0: building → surface → element).
+    // Per-surface sidecar — provides CityGML IDs and the thematic_role
+    // string we map to the integer surface_class.
     let sidecar_path = input_dir.join(format!("{obj_key}.json"));
-    let ids = SurfaceSidecar::load(&sidecar_path)
+    let sidecar = SurfaceSidecar::load(&sidecar_path).ok();
+
+    let ids = sidecar
+        .as_ref()
         .map(|s| s.resolved_ids())
-        .unwrap_or_else(|_| ResolvedIds::unknown());
+        .unwrap_or_else(ResolvedIds::unknown);
+    let surface_gmlid = ids.surface_gmlid;
+    let building_gmlid = ids.building_gmlid;
 
-    let element_gmlid = ids.element_gmlid.clone();
-    let surface_gmlid = ids.surface_gmlid.clone();
-    let building_gmlid = ids.building_gmlid.clone();
-
-    // One (object, object_class) upsert per file, piggy-backed through
-    // the same channel so it stays serialised against the COPY.
-    if let Some(tx) = pg_tx {
-        let _ = tx.blocking_send(RowMsg::Object {
-            element_gmlid: element_gmlid.clone(),
-            surface_gmlid: surface_gmlid.clone(),
-            building_gmlid: building_gmlid.clone(),
-            object_type: object_type.clone(),
-        });
-    }
+    // surface_class: prefer the CityGML thematic_role from the sidecar
+    // (Bavaria CityGML inputs); fall back to index.json class lookup
+    // (IFC / mixed inputs); else "Unknown" → 0.
+    let class_str = sidecar
+        .as_ref()
+        .and_then(|s| s.thematic_role.clone())
+        .or_else(|| index.map(|idx| lookup_semantics(idx, &obj_key, grid)))
+        .unwrap_or_else(|| "Unknown".to_string());
+    let surface_class = surface_class_id(&class_str);
 
     // Iterate occupied voxels, emitting rows.
     let mut emitted = 0u64;
@@ -555,32 +510,28 @@ fn process_single_binvox(
         let x = origin[0] + (ix as f64 + 0.5) * vx;
         let y = origin[1] + (iy as f64 + 0.5) * vy;
         let z = origin[2] + (iz as f64 + 0.5) * vz;
-        let vp = voxid::compute(ix, iy, iz, [vx, vy, vz]);
 
         if let Some(c) = csv {
             c.write(&VoxelPayload {
-                voxel_position: vp,
                 x,
                 y,
                 z,
                 srid,
-                element_gmlid: &element_gmlid,
+                surface_class,
                 surface_gmlid: &surface_gmlid,
                 building_gmlid: &building_gmlid,
-                object_type: &object_type,
             })?;
         }
         if let Some(tx) = pg_tx {
-            let _ = tx.blocking_send(RowMsg::Row(OwnedVoxelRow {
-                voxel_position: vp,
+            let _ = tx.blocking_send(OwnedVoxelRow {
                 x,
                 y,
                 z,
                 srid,
-                element_gmlid: element_gmlid.clone(),
+                surface_class,
                 surface_gmlid: surface_gmlid.clone(),
                 building_gmlid: building_gmlid.clone(),
-            }));
+            });
         }
         emitted += 1;
         emitted_batch += 1;
