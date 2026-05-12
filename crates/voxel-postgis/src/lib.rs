@@ -85,13 +85,15 @@ pub async fn connect(cfg: &PgConnectionConfig) -> Result<Client, PostgisError> {
 
 /// One voxel row in the flat `voxel` table.
 ///
-/// `building_gmlid` joins (without FK) to the `building` table loaded
-/// from `building_metadata.csv`. `surface_gmlid` is the thematic-surface
-/// gml:id from CityGML — kept for traceability, not required by the
-/// diffusion pipeline. `surface_class` is the integer mapping produced
-/// by [`voxel_schema::surface::surface_class_id`].
+/// `voxel_position` is a 13-digit linearized BIGINT index computed from
+/// grid indices (see `voxel-pipeline` crate). `building_gmlid` joins
+/// (without FK) to the `building` table loaded from `building_metadata.csv`.
+/// `surface_gmlid` is the thematic-surface gml:id from CityGML — kept for
+/// traceability. `surface_class` is the integer mapping produced by
+/// [`voxel_schema::surface::surface_class_id`].
 #[derive(Debug, Clone)]
 pub struct VoxelRow {
+    pub voxel_position: i64,
     pub x: f64,
     pub y: f64,
     pub z: f64,

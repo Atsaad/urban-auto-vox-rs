@@ -4,7 +4,7 @@
 //! `voxel` table column layout:
 //!
 //! ```text
-//! building_gmlid,surface_gmlid,surface_class,x,y,z,vox_geom
+//! voxel_position,building_gmlid,surface_gmlid,surface_class,x,y,z,vox_geom
 //! ```
 //!
 //! The PostGIS sink wraps a [`voxel_postgis::VoxelCopyWriter`]. Both
@@ -20,6 +20,7 @@ use anyhow::Result;
 use voxel_schema::ewkb::point_z_ewkb_hex;
 
 pub struct VoxelPayload<'a> {
+    pub voxel_position: i64,
     pub x: f64,
     pub y: f64,
     pub z: f64,
@@ -43,6 +44,7 @@ impl CsvSink {
             .has_headers(false)
             .from_writer(bw);
         w.write_record([
+            "voxel_position",
             "building_gmlid",
             "surface_gmlid",
             "surface_class",
@@ -58,12 +60,14 @@ impl CsvSink {
 
     pub fn write(&self, row: &VoxelPayload<'_>) -> Result<()> {
         let hex = point_z_ewkb_hex(row.x, row.y, row.z, row.srid);
+        let vp = row.voxel_position.to_string();
         let cls = row.surface_class.to_string();
         let xs = ryu_f64(row.x);
         let ys = ryu_f64(row.y);
         let zs = ryu_f64(row.z);
         let mut w = self.inner.lock().unwrap();
         w.write_record([
+            vp.as_str(),
             row.building_gmlid,
             row.surface_gmlid,
             cls.as_str(),

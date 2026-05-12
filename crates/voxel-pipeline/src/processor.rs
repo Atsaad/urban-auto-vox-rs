@@ -36,6 +36,7 @@ use voxel_schema::translate::{PerFileBbox, TranslateFile};
 use crate::sinks::{CsvSink, VoxelPayload};
 use crate::swap;
 use crate::voxelizer::{relocate_binvox, voxelize_batch, VoxelizeBatchConfig, VoxelizeStatus};
+use crate::voxid;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum OutputFormat {
@@ -312,6 +313,7 @@ async fn ingest(
             let mut copied_batch: u64 = 0;
             while let Some(row) = rx.recv().await {
                 let vr = voxel_postgis::VoxelRow {
+                    voxel_position: row.voxel_position,
                     x: row.x,
                     y: row.y,
                     z: row.z,
@@ -429,6 +431,7 @@ async fn ingest(
 
 #[derive(Debug)]
 struct OwnedVoxelRow {
+    voxel_position: i64,
     x: f64,
     y: f64,
     z: f64,
@@ -510,9 +513,11 @@ fn process_single_binvox(
         let x = origin[0] + (ix as f64 + 0.5) * vx;
         let y = origin[1] + (iy as f64 + 0.5) * vy;
         let z = origin[2] + (iz as f64 + 0.5) * vz;
+        let vp = voxid::compute(ix, iy, iz, [vx, vy, vz]);
 
         if let Some(c) = csv {
             c.write(&VoxelPayload {
+                voxel_position: vp,
                 x,
                 y,
                 z,
@@ -524,6 +529,7 @@ fn process_single_binvox(
         }
         if let Some(tx) = pg_tx {
             let _ = tx.blocking_send(OwnedVoxelRow {
+                voxel_position: vp,
                 x,
                 y,
                 z,

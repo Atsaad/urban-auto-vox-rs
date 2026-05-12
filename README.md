@@ -428,10 +428,11 @@ Two tables, decoupled by design:
   height, storeys, address, etc.) used to build the diffusion model's
   conditioning vectors at training time.
 * **`voxel`** — the only table the pipeline writes. Flat and denormalised:
-  one row per occupied voxel with `(building_gmlid, surface_gmlid,
-  surface_class, x, y, z, vox_geom)`. No FK to `building` — ingestion
-  order is unconstrained, and a 300M-row COPY pays no per-row FK
-  validation cost.
+  one row per occupied voxel with `(voxel_position, building_gmlid,
+  surface_gmlid, surface_class, x, y, z, vox_geom)`. `voxel_position` is
+  a 13-digit linearized BIGINT index for stable voxel identity. No FK to
+  `building` — ingestion order is unconstrained, and a 300M-row COPY pays
+  no per-row FK validation cost.
 
 `surface_class` is a `SMALLINT` mapping of the CityGML thematic surface:
 
@@ -470,6 +471,7 @@ CREATE INDEX idx_building_gemeindeschluessel ON building (gemeindeschluessel);
 CREATE INDEX idx_building_function_code      ON building (function_code);
 
 CREATE TABLE voxel (
+    voxel_position BIGINT           NOT NULL,
     building_gmlid TEXT             NOT NULL,
     surface_gmlid  TEXT,
     surface_class  SMALLINT         NOT NULL,

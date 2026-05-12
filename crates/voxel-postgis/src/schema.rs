@@ -58,6 +58,7 @@ pub async fn apply_schema(client: &Client, srid: u32) -> Result<(), PostgisError
             ON building (function_code);
 
         CREATE TABLE IF NOT EXISTS voxel (
+            voxel_position BIGINT           NOT NULL,
             building_gmlid TEXT             NOT NULL,
             surface_gmlid  TEXT,
             surface_class  SMALLINT         NOT NULL,

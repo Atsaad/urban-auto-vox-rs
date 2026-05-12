@@ -15,6 +15,7 @@ mod sinks;
 mod swap;
 mod translate_build;
 mod voxelizer;
+mod voxid;
 
 /// Urban-Auto-Vox Rust pipeline (steps 4-6).
 #[derive(Debug, Parser)]

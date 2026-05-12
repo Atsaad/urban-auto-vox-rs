@@ -18,6 +18,7 @@
 //! The target columns we emit, in order, are:
 //!
 //! ```text
+//! voxel_position BIGINT
 //! building_gmlid TEXT
 //! surface_gmlid  TEXT
 //! surface_class  SMALLINT
@@ -40,7 +41,7 @@ use tracing::debug;
 use crate::{PostgisError, VoxelRow};
 
 const SIGNATURE: &[u8; 11] = b"PGCOPY\n\xff\r\n\0";
-const FIELD_COUNT: i16 = 7;
+const FIELD_COUNT: i16 = 8;
 
 /// Streaming writer that owns a `COPY ... FROM STDIN BINARY` sink and
 /// buffers encoded tuples before flushing to the server.
@@ -58,8 +59,8 @@ impl VoxelCopyWriter {
     pub async fn begin(client: &Client, flush_threshold: usize) -> Result<Self, PostgisError> {
         let sink: CopyInSink<bytes::Bytes> = client
             .copy_in(
-                "COPY voxel (building_gmlid, surface_gmlid, surface_class, \
-                             x, y, z, vox_geom) \
+                "COPY voxel (voxel_position, building_gmlid, surface_gmlid, \
+                             surface_class, x, y, z, vox_geom) \
                  FROM STDIN (FORMAT BINARY)",
             )
             .await?;
@@ -81,6 +82,9 @@ impl VoxelCopyWriter {
     /// Append one tuple.
     pub async fn write_row(&mut self, row: &VoxelRow) -> Result<(), PostgisError> {
         self.buf.put_i16(FIELD_COUNT);
+
+        // voxel_position BIGINT
+        put_bigint(&mut self.buf, row.voxel_position);
 
         // building_gmlid, surface_gmlid TEXT
         put_text(&mut self.buf, &row.building_gmlid);
@@ -137,6 +141,12 @@ impl VoxelCopyWriter {
         );
         Ok(self.rows_total)
     }
+}
+
+#[inline]
+fn put_bigint(buf: &mut BytesMut, v: i64) {
+    buf.put_u32(8);
+    buf.put_i64(v);
 }
 
 #[inline]
