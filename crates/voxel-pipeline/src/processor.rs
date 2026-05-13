@@ -85,9 +85,15 @@ pub struct VoxelizeArgs {
     #[arg(long, env = "PIPELINE_OUTPUT_FORMAT", value_enum, default_value_t = OutputFormat::Csv)]
     pub output_format: OutputFormat,
 
-    /// Where to write `voxels_output.csv`. Defaults to `<input_dir>`.
+    /// Where to write the output CSV. Defaults to `<input_dir>`.
     #[arg(long)]
     pub output_csv: Option<PathBuf>,
+
+    /// Directory containing the source `.gml` file(s). When set and
+    /// `--output-csv` is not given, the first `.gml` stem found here is used
+    /// as the CSV filename (e.g. `Hamburg_LOD2.gml` → `Hamburg_LOD2.csv`).
+    #[arg(long, env = "PIPELINE_GML_DIR")]
+    pub gml_dir: Option<PathBuf>,
 
     /// COPY BINARY flush threshold in bytes.
     #[arg(long, env = "PIPELINE_DB_BATCH_BYTES", default_value_t = 8 * 1024 * 1024)]
@@ -127,12 +133,22 @@ impl PostgisConnArgs {
     }
 }
 
+fn gml_stem(dir: &std::path::Path) -> Option<String> {
+    std::fs::read_dir(dir).ok()?.filter_map(|e| e.ok()).find(|e| {
+        e.path().extension().and_then(|x| x.to_str()) == Some("gml")
+    }).and_then(|e| e.path().file_stem().and_then(|s| s.to_str()).map(String::from))
+}
+
 pub async fn run(args: VoxelizeArgs) -> Result<()> {
     let input_dir = args.input_dir.clone();
-    let csv_out = args
-        .output_csv
-        .clone()
-        .unwrap_or_else(|| input_dir.join("voxels_output.csv"));
+    let csv_out = args.output_csv.clone().unwrap_or_else(|| {
+        let stem = args
+            .gml_dir
+            .as_deref()
+            .and_then(gml_stem)
+            .unwrap_or_else(|| "voxels_output".to_string());
+        input_dir.join(format!("{stem}.csv"))
+    });
 
     info!(
         dir = %input_dir.display(),

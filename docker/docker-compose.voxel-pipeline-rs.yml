@@ -29,7 +29,7 @@ services:
     command: ["true"]
 
   voxelizer:
-    image: atsaad/voxel-pipeline-rs:0.3.1
+    image: atsaad/voxel-pipeline-rs:0.3.2
     build:
       context: ..
       dockerfile: docker/Dockerfile.voxel-pipeline-rs
@@ -46,6 +46,7 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - RUST_LOG=${RUST_LOG:-info}
       - PIPELINE_INPUT_DIR=/app/data
+      - PIPELINE_GML_DIR=/app/gml
       - PIPELINE_VOXEL_SIZE=${PIPELINE_VOXEL_SIZE:-0.5}
       - PIPELINE_DB_SRID=${PIPELINE_DB_SRID:-25832}
       - PIPELINE_NUM_WORKERS=${PIPELINE_NUM_WORKERS:-8}
@@ -59,6 +60,7 @@ services:
       - PIPELINE_CUDA_VOXELIZER=/app/cuda_voxelizer/build/cuda_voxelizer
     volumes:
       - ./data/objs:/app/data:rw
+      - ./data/citygml3:/app/gml:ro
     working_dir: /app
     command: ["run"]
     healthcheck:
