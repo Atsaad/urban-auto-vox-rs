@@ -168,10 +168,32 @@ save_tile_results() {
 	find "$WORK_OBJS" -maxdepth 1 -type f -name '*.binvox' \
 		-exec mv {} "$out_dir/binvox/" \; 2>/dev/null || true
 
-	# JSON metadata + CSV output
-	for f in translate.json index.json grid_mapping.json voxels_output.csv; do
-		[ -f "$WORK_OBJS/$f" ] && cp "$WORK_OBJS/$f" "$out_dir/"
-	done
+	# Per-building voxel CSVs + JSON sidecars (chunk-level + per-building).
+	# The voxelizer writes one <gmlid>.csv per building, NOT a single
+	# voxels_output.csv (the old name in this loop was a stale leftover bug —
+	# nothing was being archived). Excludes .obj (intermediate) and .binvox
+	# (already moved above).
+	find "$WORK_OBJS" -maxdepth 1 -type f \( -name '*.csv' -o -name '*.json' \) \
+		-exec cp {} "$out_dir/" \; 2>/dev/null || true
+
+	# Concatenated tile CSV: header from first per-building file, body from
+	# all. Mirrors the chunk-process.sh convention so tensor-build can stream
+	# one file per tile/chunk instead of opening thousands.
+	local concat="$out_dir/tile_${tile}_voxels.csv"
+	local first=1
+	while IFS= read -r -d '' csv; do
+		if [ "$first" -eq 1 ]; then
+			head -n 1 "$csv" > "$concat"
+			first=0
+		fi
+		tail -n +2 "$csv" >> "$concat"
+	done < <(find "$WORK_OBJS" -maxdepth 1 -type f -name '*.csv' -print0 | sort -z)
+	if [ "$first" -eq 1 ]; then
+		rm -f "$concat"
+		log "  WARN: no per-building CSVs produced (PIPELINE_OUTPUT_FORMAT=postgis?)"
+	else
+		log "  built $(basename "$concat") ($(wc -l < "$concat") lines incl. header)"
+	fi
 
 	if [ "$AUTO_ZIP" = "true" ]; then
 		log "  compressing $out_dir"

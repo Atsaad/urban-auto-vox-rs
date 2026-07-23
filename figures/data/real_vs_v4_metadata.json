@@ -1,0 +1,126 @@
+[
+  {
+    "condition_name": "munich_res_gabled_1960s",
+    "condition_dict": {
+      "name": "munich_res_gabled_1960s",
+      "function_label": "residential",
+      "roof_type_label": "gabled",
+      "height_cluster": "medium",
+      "ratio_cluster": "regular",
+      "estimatedConstructionPeriod": "1960_1969",
+      "constructionPeriodReliability": "high",
+      "measured_height": 8.5,
+      "length_to_width_ratio": 1.5,
+      "storeys_above_ground": 2.0,
+      "constructionPeriodConfidence": 0.9
+    },
+    "matched_gmlid": "DEBY_LOD2_648102",
+    "matched_shard": "5cities_balanced_0007.h5",
+    "match_score": 0.0045,
+    "matched_row": {
+      "gmlid": "DEBY_LOD2_648102",
+      "function_label": "residential",
+      "roof_type_label": "gabled",
+      "measured_height": "8.489999771118164",
+      "length_to_width_ratio": "1.4901000261306763",
+      "storeys_above_ground": "2.0",
+      "gemeindeschluessel": "09663000",
+      "kreis": "W\u00fcrzburg",
+      "estimatedConstructionPeriod": "1960_1969",
+      "constructionPeriodReliability": "high"
+    }
+  },
+  {
+    "condition_name": "gruenderzeit_res_gabled_pre1919",
+    "condition_dict": {
+      "name": "gruenderzeit_res_gabled_pre1919",
+      "function_label": "residential",
+      "roof_type_label": "gabled",
+      "height_cluster": "tall",
+      "ratio_cluster": "regular",
+      "estimatedConstructionPeriod": "before_1919",
+      "constructionPeriodReliability": "high",
+      "measured_height": 12.0,
+      "length_to_width_ratio": 1.4,
+      "storeys_above_ground": 3.0,
+      "constructionPeriodConfidence": 0.95
+    },
+    "matched_gmlid": "DEBY_LOD2_6383537",
+    "matched_shard": "5cities_balanced_0003.h5",
+    "match_score": 0.0049,
+    "matched_row": {
+      "gmlid": "DEBY_LOD2_6383537",
+      "function_label": "residential",
+      "roof_type_label": "gabled",
+      "measured_height": "12.005999565124512",
+      "length_to_width_ratio": "1.4121999740600586",
+      "storeys_above_ground": "3.0",
+      "gemeindeschluessel": "09362000",
+      "kreis": "Regensburg",
+      "estimatedConstructionPeriod": "1980_1989",
+      "constructionPeriodReliability": "high"
+    }
+  },
+  {
+    "condition_name": "modern_nonres_flat_2000s",
+    "condition_dict": {
+      "name": "modern_nonres_flat_2000s",
+      "function_label": "non_residential",
+      "roof_type_label": "flat",
+      "height_cluster": "medium",
+      "ratio_cluster": "regular",
+      "estimatedConstructionPeriod": "2000_2009",
+      "constructionPeriodReliability": "medium",
+      "measured_height": 10.0,
+      "length_to_width_ratio": 1.8,
+      "storeys_above_ground": 3.0,
+      "constructionPeriodConfidence": 0.6
+    },
+    "matched_gmlid": "DEBY_LOD2_107890718",
+    "matched_shard": "5cities_balanced_0002.h5",
+    "match_score": 0.3118,
+    "matched_row": {
+      "gmlid": "DEBY_LOD2_107890718",
+      "function_label": "non_residential",
+      "roof_type_label": "flat",
+      "measured_height": "10.913999557495117",
+      "length_to_width_ratio": "1.006600022315979",
+      "storeys_above_ground": "3.0",
+      "gemeindeschluessel": "09362000",
+      "kreis": "Regensburg",
+      "estimatedConstructionPeriod": "",
+      "constructionPeriodReliability": "not_available"
+    }
+  },
+  {
+    "condition_name": "rural_agricultural_monopitch_1980s",
+    "condition_dict": {
+      "name": "rural_agricultural_monopitch_1980s",
+      "function_label": "agricultural_shed",
+      "roof_type_label": "monopitch",
+      "height_cluster": "short",
+      "ratio_cluster": "elongated",
+      "estimatedConstructionPeriod": "1980_1989",
+      "constructionPeriodReliability": "medium",
+      "measured_height": 6.0,
+      "length_to_width_ratio": 3.5,
+      "storeys_above_ground": 1.0,
+      "constructionPeriodConfidence": 0.5
+    },
+    "matched_gmlid": "DEBY_LOD2_96627247",
+    "matched_shard": "5cities_balanced_0003.h5",
+    "match_score": 0.196,
+    "matched_row": {
+      "gmlid": "DEBY_LOD2_96627247",
+      "function_label": "agricultural_shed",
+      "roof_type_label": "monopitch",
+      "measured_height": "6.685999870300293",
+      "length_to_width_ratio": "2.928100109100342",
+      "storeys_above_ground": "1.0",
+      "gemeindeschluessel": "09362000",
+      "kreis": "Regensburg",
+      "estimatedConstructionPeriod": "1960_1969",
+      "constructionPeriodReliability": "high"
+    }
+  }
+]

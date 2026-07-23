@@ -18,6 +18,13 @@ import os
 import re
 from datetime import datetime
 
+
+def _quote_env_value(value):
+    """Return a .env-safe double-quoted value for shell `source` compatibility."""
+    text = str(value)
+    text = text.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
+    return f'"{text}"'
+
 # ============================================================================
 # THEME CONFIGURATION
 # ============================================================================
@@ -111,6 +118,16 @@ class ModernVoxelGUI(ctk.CTk):
         self.batch_auto_zip = ctk.BooleanVar(value=True)
         self.batch_output_dir = ctk.StringVar(value="./output_batches")
 
+        # Chunk-mode processing (third mode, drives chunk-process.sh)
+        self.chunk_manifests_dir = ctk.StringVar(value="./chunks/manifests")
+        self.chunk_voxel_csv_dir = ctk.StringVar(value="./voxel_csvs")
+        self.chunk_output_dir = ctk.StringVar(value="./output_batches")
+        self.chunk_start = ctk.StringVar(value="0")
+        self.chunk_max = ctk.StringVar(value="0")
+        self.chunk_process_all = ctk.BooleanVar(value=True)
+        self.chunk_parallel = ctk.StringVar(value="8")
+        self.chunk_dry_run = ctk.BooleanVar(value=False)
+
         # Three boxes mirror the actual container graph in this workspace's
         # docker-compose.yml. The Rust voxelizer auto-derives translate.json,
         # index.json, and grid_mapping.json inside its own container, so the
@@ -124,15 +141,17 @@ class ModernVoxelGUI(ctk.CTk):
         self.refresh_timer = None
         self.auto_refresh = ctk.BooleanVar(value=True)
         self._command_running = False
+        self._running_process = None     # subprocess.Popen of the live pipeline (for Stop button)
         self._last_output_time = 0.0
 
         self.create_ui()
+        self._load_env_into_ui()  # restore last-saved settings if .env exists
         self.refresh_status()
         self.start_auto_refresh()
 
         self.log_message("🚀 AutoVox Pipeline Manager — Rust edition", "info")
         self.log_message(f"📁 Working directory: {self.working_dir}", "info")
-        self.log_message("   ./start.sh (single tile) · ./batch-process.sh (many tiles)", "info")
+        self.log_message("   ./start.sh (single) · ./batch-process.sh (tiles) · ./chunk-process.sh (chunks)", "info")
         self.log_message("✨ Configure settings → Write Config → Start Pipeline\n", "success")
 
     # ========================================================================
@@ -164,6 +183,7 @@ class ModernVoxelGUI(ctk.CTk):
         self.create_voxelizer_section(config)
         self.create_output_section(config)
         self.create_batch_section(config)
+        self.create_chunk_section(config)
 
         self.create_action_buttons(left)         # row 3
 
@@ -200,9 +220,9 @@ class ModernVoxelGUI(ctk.CTk):
         self.theme_switch.select()
         self.theme_switch.pack(side="right", padx=5)
 
-        # Processing mode toggle
+        # Processing mode toggle (3-way: single / batch / chunk)
         self.mode_toggle = ctk.CTkSegmentedButton(
-            inner, values=["🔹 Single", "📦 Batch"],
+            inner, values=["🔹 Single", "📦 Batch", "🧊 Chunk"],
             command=self._on_mode_change,
             font=ctk.CTkFont(size=11, weight="bold"),
             selected_color=DARK_COLORS['primary'],
@@ -360,17 +380,26 @@ class ModernVoxelGUI(ctk.CTk):
         self.output_desc.configure(text=descs.get(self.output_format.get(), ""))
 
     def _on_mode_change(self, value):
+        # Hide all mode-specific sections first
+        self.batch_section.pack_forget()
+        self.chunk_section.pack_forget()
+
         if "Single" in value:
             self.processing_mode.set("single")
-            self.batch_section.pack_forget()
             self.start_btn.configure(text="▶ Start Pipeline")
             self.log_message("🔹 Single Processing mode", "info")
-        else:
+        elif "Batch" in value:
             self.processing_mode.set("batch")
             self.batch_section.pack(fill="x", pady=3, padx=3, after=self.output_section_frame)
             self.start_btn.configure(text="📦 Start Batch")
             self.log_message("📦 Batch Processing mode", "info")
             self._update_tile_count()
+        else:  # Chunk
+            self.processing_mode.set("chunk")
+            self.chunk_section.pack(fill="x", pady=3, padx=3, after=self.output_section_frame)
+            self.start_btn.configure(text="🧊 Start Chunks")
+            self.log_message("🧊 Chunk Processing mode", "info")
+            self._update_chunk_summary()
 
     # ========================================================================
     # BATCH SECTION
@@ -464,6 +493,178 @@ class ModernVoxelGUI(ctk.CTk):
             self.tile_count_label.configure(text=f"  ❌ {e}")
 
     # ========================================================================
+    # CHUNK SECTION (drives chunk-process.sh)
+    # ========================================================================
+
+    def create_chunk_section(self, parent):
+        self.chunk_section = ctk.CTkFrame(parent, fg_color=theme('card'), corner_radius=12)
+        # Not packed initially — only shown when chunk mode is selected.
+
+        header = ctk.CTkFrame(self.chunk_section, fg_color="transparent")
+        header.pack(fill="x", padx=12, pady=(10, 5))
+        ctk.CTkLabel(header, text="6️⃣ Chunk", font=ctk.CTkFont(size=13, weight="bold")).pack(side="left")
+        ctk.CTkLabel(header, text="new", font=ctk.CTkFont(size=9, weight="bold"),
+                     fg_color=theme('success'), corner_radius=4, padx=6, pady=1).pack(side="left", padx=8)
+
+        content = ctk.CTkFrame(self.chunk_section, fg_color="transparent")
+        content.pack(fill="x", padx=12, pady=(0, 10))
+        content.grid_columnconfigure(1, weight=1)
+
+        # Manifests dir
+        ctk.CTkLabel(content, text="Manifests:", font=ctk.CTkFont(weight="bold")).grid(
+            row=0, column=0, sticky="w", padx=3, pady=5)
+        m_row = ctk.CTkFrame(content, fg_color="transparent")
+        m_row.grid(row=0, column=1, sticky="ew", padx=3, pady=5)
+        m_row.grid_columnconfigure(0, weight=1)
+        ctk.CTkEntry(m_row, textvariable=self.chunk_manifests_dir,
+                     placeholder_text="./chunks/manifests").grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        ctk.CTkButton(m_row, text="📂", width=35, command=self._browse_chunk_manifests,
+                      fg_color=theme('accent')).grid(row=0, column=1)
+
+        self.chunk_summary_label = ctk.CTkLabel(content, text="  No manifests scanned yet",
+                                                 text_color=theme('text_muted'), font=ctk.CTkFont(size=10))
+        self.chunk_summary_label.grid(row=1, column=0, columnspan=2, sticky="w", padx=3)
+
+        # CSV output dir (kept unzipped for tensor build)
+        ctk.CTkLabel(content, text="CSV out:", font=ctk.CTkFont(weight="bold")).grid(
+            row=2, column=0, sticky="w", padx=3, pady=3)
+        csv_row = ctk.CTkFrame(content, fg_color="transparent")
+        csv_row.grid(row=2, column=1, sticky="ew", padx=3, pady=3)
+        csv_row.grid_columnconfigure(0, weight=1)
+        ctk.CTkEntry(csv_row, textvariable=self.chunk_voxel_csv_dir,
+                     placeholder_text="./voxel_csvs").grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        ctk.CTkButton(csv_row, text="📂", width=35, command=self._browse_chunk_csv_dir,
+                      fg_color=theme('accent')).grid(row=0, column=1)
+
+        # Archive dir (per-chunk zip)
+        ctk.CTkLabel(content, text="Archive:", font=ctk.CTkFont(weight="bold")).grid(
+            row=3, column=0, sticky="w", padx=3, pady=3)
+        arc_row = ctk.CTkFrame(content, fg_color="transparent")
+        arc_row.grid(row=3, column=1, sticky="ew", padx=3, pady=3)
+        arc_row.grid_columnconfigure(0, weight=1)
+        ctk.CTkEntry(arc_row, textvariable=self.chunk_output_dir,
+                     placeholder_text="./output_batches").grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        ctk.CTkButton(arc_row, text="📂", width=35, command=self._browse_chunk_archive_dir,
+                      fg_color=theme('accent')).grid(row=0, column=1)
+
+        # Range: start + max + all
+        ctk.CTkLabel(content, text="Range:", font=ctk.CTkFont(weight="bold")).grid(
+            row=4, column=0, sticky="w", padx=3, pady=3)
+        range_row = ctk.CTkFrame(content, fg_color="transparent")
+        range_row.grid(row=4, column=1, sticky="ew", padx=3, pady=3)
+        ctk.CTkLabel(range_row, text="Start:").pack(side="left", padx=(0, 3))
+        ctk.CTkEntry(range_row, textvariable=self.chunk_start, width=70).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(range_row, text="Max:").pack(side="left", padx=(0, 3))
+        self.chunk_max_entry = ctk.CTkEntry(range_row, textvariable=self.chunk_max,
+                                             width=70, state="disabled")
+        self.chunk_max_entry.pack(side="left", padx=(0, 5))
+        ctk.CTkCheckBox(range_row, text="All", variable=self.chunk_process_all,
+                        command=self._toggle_chunk_max).pack(side="left", padx=(0, 12))
+
+        # Presets row — the §12 five-city training set (claude.md §11 table)
+        ctk.CTkLabel(content, text="Presets:", font=ctk.CTkFont(weight="bold")).grid(
+            row=5, column=0, sticky="w", padx=3, pady=3)
+        preset_row = ctk.CTkFrame(content, fg_color="transparent")
+        preset_row.grid(row=5, column=1, sticky="ew", padx=3, pady=3)
+        # (start_chunk, n_chunks, label) — matches claude.md §11 unified table
+        for start, n, label in [
+            (17,   62, "München"),
+            (1715, 18, "Augsburg"),
+            (1245, 36, "Nürnberg"),
+            (1485, 11, "Würzburg"),
+            (797,  11, "Regensburg"),
+        ]:
+            ctk.CTkButton(
+                preset_row, text=label, width=88, height=24,
+                command=lambda s=start, c=n, l=label: self._set_chunk_preset(s, c, l),
+                fg_color=theme('accent')
+            ).pack(side="left", padx=2)
+
+        # Workers + dry-run + summary
+        ctk.CTkLabel(content, text="Workers:", font=ctk.CTkFont(weight="bold")).grid(
+            row=6, column=0, sticky="w", padx=3, pady=3)
+        w_row = ctk.CTkFrame(content, fg_color="transparent")
+        w_row.grid(row=6, column=1, sticky="ew", padx=3, pady=3)
+        ctk.CTkEntry(w_row, textvariable=self.chunk_parallel, width=70).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(w_row, text="parallel cp", text_color=theme('text_muted'),
+                     font=ctk.CTkFont(size=10)).pack(side="left", padx=(0, 12))
+        ctk.CTkCheckBox(w_row, text="Dry-run", variable=self.chunk_dry_run).pack(side="left", padx=12)
+        ctk.CTkButton(w_row, text="Summary", width=80, height=24,
+                      command=self._show_chunk_summary,
+                      fg_color=theme('primary'), hover_color=theme('primary_hover')
+                      ).pack(side="right", padx=3)
+
+        ctk.CTkLabel(content, text="ℹ️ Each chunk ≈ 5000 buildings sorted by gemeindeschluessel. "
+                                    "Resume-capable. CSV per chunk kept unzipped for tensor build.",
+                     text_color=theme('text_muted'), font=ctk.CTkFont(size=10),
+                     wraplength=450, justify="left"
+                     ).grid(row=7, column=0, columnspan=2, sticky="w", padx=3, pady=(5, 0))
+
+    def _browse_chunk_manifests(self):
+        path = filedialog.askdirectory(title="Select Chunk Manifests Directory")
+        if path:
+            self.chunk_manifests_dir.set(path)
+            self._update_chunk_summary()
+
+    def _browse_chunk_csv_dir(self):
+        path = filedialog.askdirectory(title="Select Voxel CSV Output Directory")
+        if path:
+            self.chunk_voxel_csv_dir.set(path)
+
+    def _browse_chunk_archive_dir(self):
+        path = filedialog.askdirectory(title="Select Chunk Archive Directory")
+        if path:
+            self.chunk_output_dir.set(path)
+            self._update_chunk_summary()
+
+    def _toggle_chunk_max(self):
+        if self.chunk_process_all.get():
+            self.chunk_max_entry.configure(state="disabled")
+            self.chunk_max.set("0")
+        else:
+            self.chunk_max_entry.configure(state="normal")
+            if self.chunk_max.get() in ("", "0"):
+                self.chunk_max.set("10")
+
+    def _set_chunk_preset(self, start, count, label):
+        """Generic preset setter — fills Start/Max and disables 'All'."""
+        self.chunk_start.set(str(start))
+        self.chunk_process_all.set(False)
+        self.chunk_max_entry.configure(state="normal")
+        self.chunk_max.set(str(count))
+        last = start + count - 1
+        self.log_message(
+            f"📍 Preset: {label} → chunks {start}–{last} ({count} chunks)", "info")
+
+    def _show_chunk_summary(self):
+        """Run `./chunk-process.sh --summary` and dump the result in the terminal."""
+        self.log_message("", "info")
+        self.run_command("./chunk-process.sh --summary", "Chunk Summary")
+
+    def _update_chunk_summary(self):
+        mdir = self.chunk_manifests_dir.get()
+        if not mdir or not os.path.isdir(mdir):
+            self.chunk_summary_label.configure(
+                text="  ⚠️ Manifests directory not found "
+                     "(run chunk_buildings.py to create it)",
+                text_color=COLORS['warning'])
+            return
+        try:
+            manifests = [f for f in os.listdir(mdir)
+                         if f.startswith('chunk_') and f.endswith('.csv')]
+            archive_dir = self.chunk_output_dir.get()
+            done = 0
+            if os.path.isdir(archive_dir):
+                done = sum(1 for f in os.listdir(archive_dir)
+                           if f.startswith('chunk_') and f.endswith('.zip'))
+            remaining = len(manifests) - done
+            self.chunk_summary_label.configure(
+                text=f"  📊 {len(manifests)} chunks  |  ✅ {done} done  |  ⏳ {remaining} remaining",
+                text_color=COLORS['success'])
+        except Exception as e:
+            self.chunk_summary_label.configure(text=f"  ❌ {e}", text_color=COLORS['danger'])
+
+    # ========================================================================
     # ACTION BUTTONS
     # ========================================================================
 
@@ -473,10 +674,10 @@ class ModernVoxelGUI(ctk.CTk):
         inner = ctk.CTkFrame(frame, fg_color="transparent")
         inner.pack(fill="x", padx=10, pady=10)
 
-        # Row 1: Primary actions
+        # Row 1: Primary actions (5 columns: Write · Start · Stop · Archive · Clean)
         r1 = ctk.CTkFrame(inner, fg_color="transparent")
         r1.pack(fill="x", pady=3)
-        r1.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        r1.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
 
         ctk.CTkButton(r1, text="💾 Write Config", command=self.write_configuration,
                       fg_color=theme('primary'), hover_color=theme('primary_hover'),
@@ -487,13 +688,19 @@ class ModernVoxelGUI(ctk.CTk):
                                         height=36, font=ctk.CTkFont(size=12, weight="bold"))
         self.start_btn.grid(row=0, column=1, padx=3, sticky="ew")
 
+        self.stop_btn = ctk.CTkButton(r1, text="🛑 Stop", command=self.stop_pipeline,
+                                       fg_color=theme('danger'), hover_color=theme('danger_hover'),
+                                       height=36, font=ctk.CTkFont(size=12, weight="bold"),
+                                       state="disabled")
+        self.stop_btn.grid(row=0, column=2, padx=3, sticky="ew")
+
         ctk.CTkButton(r1, text="📦 Archive", command=self.archive_results,
                       fg_color=theme('warning'), hover_color=theme('warning_hover'),
-                      height=36, font=ctk.CTkFont(size=12, weight="bold")).grid(row=0, column=2, padx=3, sticky="ew")
+                      height=36, font=ctk.CTkFont(size=12, weight="bold")).grid(row=0, column=3, padx=3, sticky="ew")
 
         ctk.CTkButton(r1, text="🗑 Clean Data", command=self.clean_data,
                       fg_color=theme('accent'), hover_color=theme('card_hover'),
-                      height=36).grid(row=0, column=3, padx=3, sticky="ew")
+                      height=36).grid(row=0, column=4, padx=3, sticky="ew")
 
         # Row 2: Secondary actions
         r2 = ctk.CTkFrame(inner, fg_color="transparent")
@@ -674,6 +881,92 @@ class ModernVoxelGUI(ctk.CTk):
             self.db_status.configure(text="🗄️ error", text_color=COLORS['danger'])
 
     # ========================================================================
+    # LOAD CONFIGURATION (restore on startup)
+    # ========================================================================
+
+    def _parse_env_file(self, path):
+        """Minimal .env parser: KEY=VALUE per line, supports quoted values."""
+        out = {}
+        try:
+            with open(path) as f:
+                for raw in f:
+                    line = raw.strip()
+                    if not line or line.startswith('#') or '=' not in line:
+                        continue
+                    k, _, v = line.partition('=')
+                    k = k.strip()
+                    v = v.strip()
+                    # Strip surrounding quotes (handle both " and ')
+                    if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+                        v = v[1:-1]
+                        # Unescape the same chars _quote_env_value escapes
+                        v = v.replace('\\"', '"').replace('\\$', '$') \
+                             .replace('\\`', '`').replace('\\\\', '\\')
+                    out[k] = v
+        except Exception:
+            pass
+        return out
+
+    def _load_env_into_ui(self):
+        env_path = os.path.join(self.working_dir, ".env")
+        if not os.path.isfile(env_path):
+            return
+        e = self._parse_env_file(env_path)
+        if not e:
+            return
+
+        # Map env keys → StringVar/BooleanVar setters
+        def set_str(var, key):
+            if key in e and e[key] != "":
+                var.set(e[key])
+
+        def set_int_var(var, key):
+            if key in e and e[key].isdigit():
+                var.set(int(e[key]))
+
+        def set_bool(var, key):
+            if key in e:
+                var.set(e[key].lower() in ("true", "1", "yes", "on"))
+
+        set_str(self.citygml_version, "CITYGML_INPUT_VERSION")
+        set_str(self.db_name, "POSTGRES_DB")
+        set_str(self.db_user, "POSTGRES_USER")
+        set_str(self.db_password, "POSTGRES_PASSWORD")
+        set_str(self.db_host_port, "POSTGRES_HOST_PORT")
+        set_str(self.voxel_size, "PIPELINE_VOXEL_SIZE")
+        set_str(self.db_srid, "PIPELINE_DB_SRID")
+        set_int_var(self.num_workers, "PIPELINE_NUM_WORKERS")
+        set_str(self.output_format, "PIPELINE_OUTPUT_FORMAT")
+
+        # rustgml2obj flag checkboxes from RUSTGML2OBJ_EXTRA_FLAGS (tokenize
+        # to avoid "--group-sc" matching inside "--group-scomp").
+        flag_tokens = e.get("RUSTGML2OBJ_EXTRA_FLAGS", "").split()
+        self.opt_tbw.set("--tbw" in flag_tokens)
+        self.opt_add_bb.set("--add-bb" in flag_tokens)
+        self.opt_add_json.set("--add-json" in flag_tokens)
+        self.opt_group_sc.set("--group-sc" in flag_tokens)
+        self.opt_group_scomp.set("--group-scomp" in flag_tokens)
+
+        # Batch
+        set_str(self.batch_source_dir, "BATCH_SOURCE_DIR")
+        set_str(self.batch_max_batches, "BATCH_MAX_BATCHES")
+        set_bool(self.batch_auto_zip, "BATCH_AUTO_ZIP")
+        set_str(self.batch_output_dir, "BATCH_OUTPUT_DIR")
+        if e.get("BATCH_MAX_BATCHES", "0") not in ("", "0"):
+            self.batch_process_all.set(False)
+            try:
+                self.batch_max_entry.configure(state="normal")
+            except Exception:
+                pass
+
+        # Chunk
+        set_str(self.chunk_manifests_dir, "CHUNK_MANIFESTS_DIR")
+        set_str(self.chunk_voxel_csv_dir, "CHUNK_VOXEL_CSV_DIR")
+        set_str(self.chunk_parallel, "CHUNK_PARALLEL_COPIES")
+        # chunk_output_dir reuses BATCH_OUTPUT_DIR by default; let user override later
+        set_str(self.chunk_output_dir, "BATCH_OUTPUT_DIR")
+
+    # ========================================================================
     # WRITE CONFIGURATION
     # ========================================================================
 
@@ -709,21 +1002,39 @@ class ModernVoxelGUI(ctk.CTk):
                 f"PIPELINE_OUTPUT_FORMAT={self.output_format.get()}",
                 f'RUSTGML2OBJ_EXTRA_FLAGS="{" ".join(gml2obj_flags)}"',
             ]
-            if self.processing_mode.get() == "batch":
-                lines += [
-                    f"BATCH_SOURCE_DIR={self.batch_source_dir.get()}",
-                    f"BATCH_MAX_BATCHES={self.batch_max_batches.get()}",
-                    f"BATCH_AUTO_ZIP={'true' if self.batch_auto_zip.get() else 'false'}",
-                    f"BATCH_OUTPUT_DIR={self.batch_output_dir.get()}",
-                ]
+            # Always write batch vars so they survive a mode switch.
+            lines += [
+                f"BATCH_SOURCE_DIR={_quote_env_value(self.batch_source_dir.get())}",
+                f"BATCH_MAX_BATCHES={self.batch_max_batches.get()}",
+                f"BATCH_AUTO_ZIP={'true' if self.batch_auto_zip.get() else 'false'}",
+                f"BATCH_OUTPUT_DIR={_quote_env_value(self.batch_output_dir.get())}",
+            ]
+            # Chunk-mode vars (consumed by chunk-process.sh). Written every
+            # time so switching modes never loses the previous values.
+            lines += [
+                f"CHUNK_MANIFESTS_DIR={_quote_env_value(self.chunk_manifests_dir.get())}",
+                f"CHUNK_VOXEL_CSV_DIR={_quote_env_value(self.chunk_voxel_csv_dir.get())}",
+                f"CHUNK_PARALLEL_COPIES={self.chunk_parallel.get()}",
+            ]
+            # If chunk mode is the active one, let its archive dir override
+            # BATCH_OUTPUT_DIR (chunk-process.sh shares the BATCH_OUTPUT_DIR var).
+            if self.processing_mode.get() == "chunk":
+                lines = [ln for ln in lines if not ln.startswith("BATCH_OUTPUT_DIR=")]
+                lines.append(f"BATCH_OUTPUT_DIR={_quote_env_value(self.chunk_output_dir.get())}")
+
             with open(env_path, 'w') as f:
                 f.write("\n".join(lines) + "\n")
 
             self.log_message(f"  Voxel:{self.voxel_size.get()}m  Workers:{self.num_workers.get()}  "
                              f"Output:{self.output_format.get()}  CityGML:{self.citygml_version.get()}", "info")
             self.log_message(f"  GML2OBJ flags: {' '.join(gml2obj_flags) if gml2obj_flags else '(none)'}", "info")
-            if self.processing_mode.get() == "batch":
+            mode_now = self.processing_mode.get()
+            if mode_now == "batch":
                 self.log_message(f"  Batch src: {self.batch_source_dir.get()}", "info")
+            elif mode_now == "chunk":
+                self.log_message(f"  Chunk manifests: {self.chunk_manifests_dir.get()}", "info")
+                self.log_message(f"  Chunk CSV out:   {self.chunk_voxel_csv_dir.get()}", "info")
+                self.log_message(f"  Chunk archive:   {self.chunk_output_dir.get()}", "info")
             self.log_message("✅ .env saved", "success")
             messagebox.showinfo("Success", "Configuration written to .env\n(docker-compose reads it automatically)")
         except Exception as e:
@@ -739,6 +1050,7 @@ class ModernVoxelGUI(ctk.CTk):
             self._command_running = True
             self._last_output_time = time.time()
             self.after(0, lambda: self.start_btn.configure(state="disabled"))
+            self.after(0, lambda: self.stop_btn.configure(state="normal"))
 
             self.after(0, lambda: self.log_message(f"\n{'═' * 45}", "info"))
             self.after(0, lambda: self.log_message(f"🚀 {description}", "info"))
@@ -755,11 +1067,15 @@ class ModernVoxelGUI(ctk.CTk):
                 if os.path.isfile(env_path):
                     shell_cmd = f"set -a && source .env && set +a && {command}"
 
+                # start_new_session=True puts the bash + its children in a new
+                # process group so a single signal can reach all of them.
                 process = subprocess.Popen(
                     shell_cmd, shell=True, executable="/bin/bash",
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1, cwd=self.working_dir, env=env
+                    text=True, bufsize=1, cwd=self.working_dir, env=env,
+                    start_new_session=True,
                 )
+                self._running_process = process
 
                 for line in process.stdout:
                     self._last_output_time = time.time()
@@ -771,15 +1087,80 @@ class ModernVoxelGUI(ctk.CTk):
                 if process.returncode == 0:
                     self.after(0, lambda: self.log_message(f"\n✅ {description} completed!", "success"))
                 else:
-                    self.after(0, lambda: self.log_message(f"\n❌ {description} failed (code {process.returncode})", "error"))
+                    # Negative returncode = killed by signal (e.g. -2 = SIGINT from Stop button).
+                    if process.returncode < 0:
+                        self.after(0, lambda: self.log_message(
+                            f"\n🛑 {description} stopped (signal {-process.returncode})", "warning"))
+                    else:
+                        self.after(0, lambda: self.log_message(
+                            f"\n❌ {description} failed (code {process.returncode})", "error"))
 
             except Exception as e:
                 self.after(0, lambda: self.log_message(f"\n❌ Error: {e}", "error"))
             finally:
                 self._command_running = False
+                self._running_process = None
                 self.after(0, lambda: self.start_btn.configure(state="normal"))
+                self.after(0, lambda: self.stop_btn.configure(state="disabled"))
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def stop_pipeline(self):
+        """Halt the running pipeline. Sends SIGINT first (clean Ctrl+C),
+        escalates to pkill, and if still stuck after 10 s stops the voxelizer
+        container directly."""
+        if not self._command_running or self._running_process is None:
+            messagebox.showinfo("Nothing to stop", "No pipeline is currently running.")
+            return
+
+        if not messagebox.askyesno(
+                "Stop pipeline?",
+                "Stop the currently running pipeline?\n\n"
+                "• The current chunk/tile will be abandoned (no archive written)\n"
+                "• Completed chunks/tiles stay safe\n"
+                "• Resume by clicking Start again — already-done chunks are skipped\n\n"
+                "Proceed?"):
+            return
+
+        import signal
+        pid = self._running_process.pid
+        self.log_message(f"\n🛑 Stop requested — sending SIGINT to bash PID {pid}", "warning")
+
+        # 1. Try SIGINT to the entire process group (clean — same as Ctrl+C).
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGINT)
+            self.log_message("   SIGINT sent to process group", "info")
+        except Exception as e:
+            self.log_message(f"   killpg failed: {e} — falling back to pkill", "warning")
+            try:
+                subprocess.run(["pkill", "-INT", "-f", "chunk-process.sh"],
+                               capture_output=True, timeout=5)
+                subprocess.run(["pkill", "-INT", "-f", "batch-process.sh"],
+                               capture_output=True, timeout=5)
+            except Exception as e2:
+                self.log_message(f"   pkill failed: {e2}", "error")
+
+        # 2. If still alive after 10 s, escalate by stopping the voxelizer container
+        #    with a 30s grace period (allows current voxelizer batch to finish).
+        def _escalate():
+            if self._command_running and self._running_process is not None:
+                self.log_message("   ⚠ Pipeline still running after 10s — "
+                                 "gracefully stopping voxelizer (30s timeout)...", "warning")
+                try:
+                    r = subprocess.run(
+                        ["docker", "compose", "stop", "-t", "30", "voxelizer"],
+                        capture_output=True, text=True, timeout=45,
+                        cwd=self.working_dir,
+                    )
+                    if r.returncode == 0:
+                        self.log_message("   ✓ Voxelizer container stopped cleanly", "info")
+                    else:
+                        self.log_message(f"   docker compose stop returned "
+                                         f"{r.returncode}: {r.stderr.strip()}", "error")
+                except Exception as e:
+                    self.log_message(f"   docker compose stop failed: {e}", "error")
+
+        self.after(10000, _escalate)
 
     # Step-detection patterns matched against start.sh stdout
     _STEP_PATTERNS = [
@@ -816,13 +1197,46 @@ class ModernVoxelGUI(ctk.CTk):
     # ========================================================================
 
     def start_pipeline(self):
-        if self.processing_mode.get() == "batch":
+        mode = self.processing_mode.get()
+        if mode == "batch":
             src = self.batch_source_dir.get()
             if not src or not os.path.isdir(src):
                 messagebox.showerror("Error", "Set a valid source directory for batch processing.")
                 return
             self.log_message(f"\n📦 Starting BATCH: {src}", "info")
             self.run_command("./batch-process.sh", "Batch Processing")
+        elif mode == "chunk":
+            mdir = self.chunk_manifests_dir.get()
+            if not mdir or not os.path.isdir(mdir):
+                messagebox.showerror(
+                    "Error",
+                    f"Chunk manifests dir not found:\n{mdir}\n\n"
+                    "Run chunk_buildings.py first to create it.")
+                return
+            # Validate numeric fields
+            try:
+                start = int(self.chunk_start.get() or "0")
+            except ValueError:
+                messagebox.showerror("Error", "Start chunk must be an integer.")
+                return
+            mx = 0
+            if not self.chunk_process_all.get():
+                try:
+                    mx = int(self.chunk_max.get() or "0")
+                except ValueError:
+                    messagebox.showerror("Error", "Max chunks must be an integer.")
+                    return
+            # Build CLI flags for chunk-process.sh
+            args = []
+            if start > 0:
+                args += ["--start", str(start)]
+            if mx > 0:
+                args += ["--max", str(mx)]
+            if self.chunk_dry_run.get():
+                args.append("--dry-run")
+            cmd = "./chunk-process.sh" + (" " + " ".join(args) if args else "")
+            self.log_message(f"\n🧊 Starting CHUNKS: {cmd}", "info")
+            self.run_command(cmd, "Chunk Processing")
         else:
             self.log_message("\n🚀 Starting pipeline...", "info")
             for i in range(len(self.pipeline_steps)):
