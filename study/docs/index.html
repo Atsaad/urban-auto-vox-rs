@@ -189,7 +189,13 @@
 // null falls back to a manual result code, which works but loses anyone
 // who forgets to send it.
 // ---------------------------------------------------------------------
-const RESULTS_ENDPOINT = "http://localhost:8766/collect";
+// ---------------------------------------------------------------------
+// >>> SET THIS BEFORE PUBLISHING <<<
+// Paste the Google Apps Script /exec URL (study/README.md section 3).
+// Leaving it null is SAFE -- the page falls back to showing a result
+// code -- but a localhost URL is NOT: a published page would post to
+// each visitor's own machine, fail silently, and lose every response.
+const RESULTS_ENDPOINT = null;
 
 const SAVE_KEY  = 'uav-rooftype-v2';
 const QUEUE_KEY = 'uav-rooftype-queue-v2';
