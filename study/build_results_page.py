@@ -1,9 +1,17 @@
 """Build a deployable, passphrase-protected results page.
 
-The results view needs two secrets: the answer key (which roof each
-stimulus really has) and a Supabase key that can read the responses.
-Publishing either in plaintext would void the study, because a
-participant could look up the answers.
+The results view needs one secret: the answer key — which roof each
+stimulus really has. Publishing that in plaintext would void the study,
+because a participant could look up the answers.
+
+Reads use the PUBLISHABLE key, not the secret one. Supabase refuses
+secret keys sent from a browser ("Forbidden use of secret API key in
+browser") and is right to: a secret key in a page is a secret no longer.
+So the responses table carries an anon SELECT policy and the page reads
+it with the same public key the study page already ships. The responses
+themselves are a random session id, an image hash and a chosen roof
+type — nothing identifying, and useless without the answer key, which
+stays encrypted.
 
 So they are encrypted, not hidden. The page ships an AES-256-GCM
 ciphertext; the passphrase you choose derives the key via PBKDF2-SHA256
@@ -58,9 +66,12 @@ def encrypt(payload: dict, passphrase: str) -> dict:
 
 def main() -> None:
     url = os.environ.get("SUPABASE_URL")
-    sec = os.environ.get("SUPABASE_SECRET")
-    if not (url and sec):
-        raise SystemExit("set SUPABASE_URL and SUPABASE_SECRET first")
+    pub = os.environ.get("SUPABASE_PUBLISHABLE")
+    if not (url and pub):
+        raise SystemExit("set SUPABASE_URL and SUPABASE_PUBLISHABLE first.\n"
+                         "Use the PUBLISHABLE key: Supabase blocks secret keys "
+                         "sent from a browser, and embedding one in a page "
+                         "would defeat the point of it being secret.")
     if not KEY_PATH.exists():
         raise SystemExit(f"answer key not found at {KEY_PATH}")
 
@@ -76,10 +87,14 @@ def main() -> None:
                          "three or four unrelated words")
 
     key = json.loads(KEY_PATH.read_text())
-    blob = encrypt({"key": key, "url": url.rstrip("/"), "sb": sec}, p1)
+    # Only the answer key is encrypted. The URL and publishable key are
+    # already public in the study page; encrypting them would be theatre.
+    blob = encrypt({"key": key}, p1)
+    cfg = json.dumps({"url": url.rstrip("/"), "sb": pub})
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(PAGE.replace("__BLOB__", json.dumps(blob)))
+    OUT.write_text(PAGE.replace("__BLOB__", json.dumps(blob))
+                       .replace("__CFG__", cfg))
     print(f"wrote {OUT}  ({OUT.stat().st_size // 1024} KiB)")
     print(f"  {len(key)} stimuli in the encrypted answer key")
     print("  safe to commit: without the passphrase this is undecryptable")
@@ -156,6 +171,7 @@ img{width:56px;height:56px;object-fit:contain;border-radius:6px;background:var(-
 
 <script>
 const BLOB = __BLOB__;
+const CFG  = __CFG__;   // public: same key the study page already ships
 const dec = new TextDecoder(), enc = new TextEncoder();
 const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 
@@ -170,6 +186,7 @@ async function unlock(){
       base, {name:'AES-GCM', length:256}, false, ['decrypt']);
     const pt = await crypto.subtle.decrypt({name:'AES-GCM', iv:b64(BLOB.iv)}, key, b64(BLOB.ct));
     const payload = JSON.parse(dec.decode(pt));
+    payload.url = CFG.url; payload.sb = CFG.sb;
     document.getElementById('gate').hidden = true;
     document.getElementById('app').hidden = false;
     // render() is async: without this catch any failure inside it becomes a
