@@ -163,8 +163,6 @@
 
   <div class="row">
     <button class="act" onclick="start()">Start</button>
-    <button class="ghost" id="resumeBtn" hidden onclick="resume()">Resume</button>
-    <button class="link" id="clearBtn" hidden onclick="clearSaved()">start over</button>
   </div>
 </div>
 
@@ -194,7 +192,6 @@
   <p class="note">Your answers contribute to the human-evaluation part of a
     Master's thesis at the TUM Chair of Geoinformatics.</p>
   <div id="submitBlock"></div>
-  <div class="row"><button class="link" onclick="clearSaved()">clear saved progress</button></div>
 </div>
 
 </div>
@@ -295,17 +292,11 @@ fetch('stimuli.json').then(r => r.json()).then(d => {
     [stim[k], stim[j]] = [stim[j], stim[k]];
   }
   document.getElementById('fN').textContent = stim.length;
-  const saved = load();
-  if (saved && Object.keys(saved.answers || {}).length) {
-    answers = saved.answers;
-    if (saved.order) stim = saved.order;
-    i = saved.i || 0;
-    const b = document.getElementById('resumeBtn');
-    b.hidden = false;
-    b.textContent = `Resume (${Object.keys(answers).length} done)`;
-    document.getElementById('clearBtn').hidden = false;
-  }
   buildOptions();
+  // Any answers still queued from an earlier visit are delivered, but the
+  // session itself always starts fresh: no resume, no partially-completed
+  // state to reason about.
+  flush();
 }).catch(() => alert('Could not load the images. Please reload the page.'));
 
 function buildOptions(){
@@ -326,10 +317,8 @@ function save(){
   try { localStorage.setItem(SAVE_KEY, JSON.stringify(
     {v:2, answers, i, order:stim, ts:Date.now()})); } catch(e){}
 }
-function load(){
-  try { return JSON.parse(localStorage.getItem(SAVE_KEY) || 'null'); }
-  catch(e){ return null; }
-}
+// No load(): sessions never resume. The unsent-answer queue is separate
+// and IS restored, so a dropped connection still recovers.
 function clearSaved(){
   try { localStorage.removeItem(SAVE_KEY); localStorage.removeItem(QUEUE_KEY); }
   catch(e){}
@@ -451,8 +440,14 @@ window.addEventListener('pagehide', () => {
 });
 
 /* ---------- flow ---------- */
-function start(){ if (stim.length){ i = 0; answers = {}; go(); } }
-function resume(){ if (stim.length) go(); }
+function start(){
+  if (!stim.length) return;
+  // A new sitting each time: fresh session id, no carried-over answers.
+  SESSION = newSession();
+  try { localStorage.setItem('uav-session', SESSION); } catch(e){}
+  i = 0; answers = {};
+  go();
+}
 function go(){
   document.getElementById('intro').hidden = true;
   document.getElementById('done').hidden = true;
