@@ -1,0 +1,5 @@
+# The answer key and any backup of it must never be committed:
+# the study is blind, and publishing this would void every response.
+answer_key*
+responses/
+render*.log

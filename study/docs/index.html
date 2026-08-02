@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roof type study — TUM Chair of Geoinformatics</title>
+<style>
+  :root{
+    --bg:#fcfcfb; --fg:#17171a; --muted:#6a6a72; --faint:#8d8d95;
+    --line:#e4e4e0; --card:#fff; --accent:#2f6f4e; --accent-soft:#eaf3ee;
+    --shadow:0 1px 2px rgba(0,0,0,.04),0 8px 24px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#131417; --fg:#ececeb; --muted:#9a9aa2; --faint:#7d7d86;
+           --line:#292b31; --card:#1c1e22; --accent:#6cbf90; --accent-soft:#1b2a22;
+           --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.35); }
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       display:flex;flex-direction:column;align-items:center;padding:28px 18px 64px}
+  .wrap{width:100%;max-width:720px}
+
+  h1{font-size:1.75rem;line-height:1.2;margin:0 0 .35em;letter-spacing:-.02em}
+  h2{font-size:1.02rem;margin:2em 0 .5em;letter-spacing:-.01em}
+  h2:first-of-type{margin-top:1.6em}
+  p{margin:0 0 1em}
+  .sub{color:var(--muted);font-size:1.02rem;margin:0 0 1.8em}
+  .eyebrow{font-size:.76rem;letter-spacing:.09em;text-transform:uppercase;
+           color:var(--accent);font-weight:600;margin:0 0 .7em}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+        padding:26px 28px;box-shadow:var(--shadow)}
+  @media (max-width:520px){ .card{padding:20px} }
+
+  .facts{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:1.4em 0 .4em}
+  @media (max-width:520px){ .facts{grid-template-columns:1fr 1fr} }
+  .fact{background:var(--accent-soft);border-radius:10px;padding:12px 14px}
+  .fact b{display:block;font-size:1.28rem;line-height:1.2;letter-spacing:-.02em}
+  .fact span{font-size:.78rem;color:var(--muted)}
+
+  .steps{counter-reset:s;list-style:none;padding:0;margin:.4em 0 0}
+  .steps li{counter-increment:s;position:relative;padding-left:2.1em;margin:.55em 0}
+  .steps li::before{content:counter(s);position:absolute;left:0;top:.12em;
+    width:1.5em;height:1.5em;border-radius:50%;background:var(--accent);color:#fff;
+    font-size:.74rem;font-weight:700;display:grid;place-items:center}
+
+  .note{font-size:.88rem;color:var(--muted)}
+  .rule{height:1px;background:var(--line);margin:1.8em 0}
+
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:1.6em;align-items:center}
+  button.act{font:inherit;font-weight:600;background:var(--accent);color:#fff;border:0;
+             border-radius:9px;padding:.72em 1.5em;cursor:pointer}
+  button.act:hover{filter:brightness(1.07)}
+  button.ghost{font:inherit;background:transparent;color:var(--accent);
+               border:1px solid var(--accent);border-radius:9px;padding:.72em 1.3em;cursor:pointer}
+  button.link{background:none;border:0;color:var(--faint);cursor:pointer;
+              text-decoration:underline;font:inherit;padding:.4em}
+
+  /* ---- task ---- */
+  .bar{height:5px;background:var(--line);border-radius:5px;overflow:hidden;margin:0 0 .55em}
+  .bar>i{display:block;height:100%;background:var(--accent);width:0;transition:width .3s ease}
+  .meta{display:flex;justify-content:space-between;font-size:.84rem;
+        color:var(--muted);margin-bottom:1em}
+  .stim{background:var(--card);border:1px solid var(--line);border-radius:14px;
+        padding:10px;display:flex;justify-content:center;margin-bottom:1.2em;
+        box-shadow:var(--shadow)}
+  .stim img{width:100%;max-width:400px;height:auto;border-radius:9px;display:block}
+  .q{font-weight:600;margin:0 0 .7em}
+
+  .opts{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+  @media (max-width:620px){ .opts{grid-template-columns:repeat(2,1fr)} }
+  .opt{background:var(--card);border:2px solid var(--line);border-radius:11px;
+       padding:.7em .55em .6em;cursor:pointer;font:inherit;color:inherit;
+       display:flex;flex-direction:column;align-items:center;gap:.3em;
+       transition:border-color .12s,background .12s,transform .08s}
+  .opt:hover{border-color:var(--accent);background:var(--accent-soft)}
+  .opt:active{transform:scale(.98)}
+  .opt svg{display:block}
+  .opt b{font-size:.86rem;font-weight:600;text-align:center;line-height:1.25}
+  .opt small{font-size:.72rem;color:var(--muted);text-align:center;line-height:1.3}
+  .opt.wide{grid-column:1/-1;flex-direction:row;justify-content:center;gap:.6em}
+
+  code{background:var(--line);padding:.15em .4em;border-radius:5px;font-size:.8em;
+       word-break:break-all;display:block;margin:.7em 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- ==================== LANDING ==================== -->
+<div id="intro" class="card">
+  <p class="eyebrow">TUM · Chair of Geoinformatics · Master's thesis</p>
+  <h1>Can you tell what roof a building has?</h1>
+  <p class="sub">A two-minute study. You will see 3D building models and name
+    the roof type of each. No account, no personal data, and you can stop
+    whenever you like.</p>
+
+  <div class="facts">
+    <div class="fact"><b id="fN">—</b><span>buildings</span></div>
+    <div class="fact"><b>~2 min</b><span>typical time</span></div>
+    <div class="fact"><b>Anonymous</b><span>no sign-in</span></div>
+  </div>
+
+  <h2>What this research is about</h2>
+  <p>Cities are increasingly modelled digitally — every building stored not
+    just as a shape, but with meaning attached: which surfaces are walls,
+    which are roofs, which touch the ground. These semantic 3D city models
+    drive energy simulation, solar-potential studies and planning tools.</p>
+  <p>Creating <em>hypothetical</em> buildings for such models is still largely
+    manual, which limits how many planning scenarios anyone can explore. This
+    thesis trains a generative machine-learning model to synthesise new
+    buildings directly, converted from open CityGML city data into a 3D grid
+    of labelled cubes (voxels) at half-metre resolution. You ask for a
+    building of a certain type, height and roof, and the model produces one
+    that has never existed.</p>
+
+  <h2>Why this study exists</h2>
+  <p>The model is already measured automatically on many things — how
+    realistic the geometry is, whether surfaces are correctly labelled, and
+    whether a requested roof type actually changes the shape produced. Those
+    are numbers computed by software.</p>
+  <p><strong>What no automatic measure can tell us is whether the result reads
+    as the right building to a person.</strong> A model can score well on
+    every metric and still produce something a human would not recognise. This
+    study is the part of the evaluation that only people can provide.</p>
+  <p>Your answers are compared against the same task on <em>real</em>
+    buildings from city data. That real-building score is the benchmark: it
+    shows how legibly a roof type can be read from this kind of 3D model at
+    all. If the generated buildings are as readable as the real ones, the
+    model expresses roof types the way it should.</p>
+
+  <h2>What you will do</h2>
+  <ol class="steps">
+    <li>You see one building at a time, rendered as 3D blocks.</li>
+    <li>You pick the roof type it appears to have, from a list with diagrams.</li>
+    <li>If you cannot tell, choose <em>none of the above</em> or skip it —
+      both are useful, and guessing wildly is not.</li>
+  </ol>
+  <p class="note" style="margin-top:1em">Some buildings are real and some are
+    machine-generated. You are not told which, and it makes no difference to
+    the task. There is no feedback between items — just go with your instinct.</p>
+
+  <div class="rule"></div>
+  <p class="note"><strong>Privacy.</strong> This page records only which option
+    you chose for each image, plus a random number generated in your browser so
+    that answers from one sitting can be grouped. No name, email, account,
+    cookie, free text, or tracking of any kind. Nothing collected could
+    identify you. Your progress is stored in this browser, so you can close
+    the tab and continue later.</p>
+
+  <div class="row">
+    <button class="act" onclick="start()">Start</button>
+    <button class="ghost" id="resumeBtn" hidden onclick="resume()">Resume</button>
+    <button class="link" id="clearBtn" hidden onclick="clearSaved()">start over</button>
+  </div>
+</div>
+
+<!-- ==================== TASK ==================== -->
+<div id="task" hidden>
+  <div class="bar"><i id="prog"></i></div>
+  <div class="meta"><span id="counter"></span><span id="answered"></span></div>
+  <div class="stim"><img id="stim" alt="3D model of a building"></div>
+  <p class="q">Which roof type does this building have?</p>
+  <div class="opts" id="opts"></div>
+  <div class="row">
+    <button class="ghost" onclick="skip()">Can't tell — skip</button>
+    <button class="act" onclick="finish()">Stop &amp; submit</button>
+  </div>
+  <p class="note" style="margin-top:1em">Saved automatically after every answer.</p>
+</div>
+
+<!-- ==================== DONE ==================== -->
+<div id="done" hidden class="card">
+  <p class="eyebrow">Complete</p>
+  <h1>Thank you</h1>
+  <p id="doneMsg"></p>
+  <p class="note">Your answers contribute to the human-evaluation part of a
+    Master's thesis at the TUM Chair of Geoinformatics.</p>
+  <div id="submitBlock"></div>
+  <div class="row"><button class="link" onclick="clearSaved()">clear saved progress</button></div>
+</div>
+
+</div>
+
+<script>
+// ---------------------------------------------------------------------
+// Endpoint. Paste the Google Apps Script /exec URL here (README §3).
+// null falls back to a manual result code, which works but loses anyone
+// who forgets to send it.
+// ---------------------------------------------------------------------
+const RESULTS_ENDPOINT = "http://localhost:8766/collect";
+
+const SAVE_KEY  = 'uav-rooftype-v2';
+const QUEUE_KEY = 'uav-rooftype-queue-v2';
+
+// Random per-sitting id, generated in the browser. NOT an identifier of
+// the person: not derived from anything about them, never linked to any
+// other record, and used only to group trials when scoring.
+function newSession(){
+  const a = new Uint8Array(8);
+  (window.crypto || window.msCrypto).getRandomValues(a);
+  return Array.from(a, b => b.toString(16).padStart(2,'0')).join('');
+}
+let SESSION = localStorage.getItem('uav-session') || newSession();
+try { localStorage.setItem('uav-session', SESSION); } catch(e){}
+
+// ---------------------------------------------------------------------
+// Every roof type in the model's vocabulary, not just the ones present in
+// the stimuli. Nine of these never occur, so they act as distractors:
+// choosing one is a false positive, and a model producing ambiguous roofs
+// will attract them. Offering only the three that appear would make the
+// task solvable by elimination.
+//
+// Each carries a profile diagram. Asking a non-architect to distinguish
+// "gambrel" from "mansard" by name alone is not a reasonable request; the
+// drawing is what makes the option meaningful.
+// ---------------------------------------------------------------------
+const P = 'fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"';
+function svg(inner){
+  return '<svg width="46" height="32" viewBox="0 0 46 32" aria-hidden="true">'
+       + '<g ' + P + '>' + inner + '</g></svg>';
+}
+const BODY = '<path d="M8 30 V20 H38 V30"/>';          // walls, shared
+
+const OPTIONS = [
+  {v:'flat',        n:'Flat',        h:'no visible slope',
+   s:'<path d="M6 20 H40"/>'},
+  {v:'gabled',      n:'Gabled',      h:'two slopes to a ridge',
+   s:'<path d="M6 20 L23 8 L40 20"/>'},
+  {v:'hipped',      n:'Hipped',      h:'slopes on all four sides',
+   s:'<path d="M6 20 L15 9 H31 L40 20"/>'},
+  {v:'half_hipped', n:'Half-hipped', h:'gable with clipped top',
+   s:'<path d="M6 20 L18 8 H28 L40 20"/><path d="M18 8 L20 5 H26 L28 8"/>'},
+  {v:'monopitch',   n:'Monopitch',   h:'one single slope',
+   s:'<path d="M6 20 L40 8"/>'},
+  {v:'shed',        n:'Shed',        h:'single slope, lean-to',
+   s:'<path d="M6 8 L40 18"/>'},
+  {v:'mansard',     n:'Mansard',     h:'steep then shallow',
+   s:'<path d="M6 20 L12 11 L23 6 L34 11 L40 20"/>'},
+  {v:'gambrel',     n:'Gambrel',     h:'barn-style double slope',
+   s:'<path d="M6 20 L13 13 L23 7 L33 13 L40 20"/>'},
+  {v:'pyramid',     n:'Pyramid',     h:'four slopes to a point',
+   s:'<path d="M6 20 L23 6 L40 20"/><path d="M23 6 L23 20"/>'},
+  {v:'tented',      n:'Tented',      h:'tall, steep point',
+   s:'<path d="M9 20 L23 3 L37 20"/><path d="M23 3 L23 20"/>'},
+  {v:'curved',      n:'Curved',      h:'arched or barrel',
+   s:'<path d="M6 20 Q23 2 40 20"/>'},
+  {v:'butterfly',   n:'Butterfly',   h:'V-shape, slopes inward',
+   s:'<path d="M6 8 L23 18 L40 8"/>'},
+  {v:'none',        n:'None of the above / can’t tell', h:'',
+   s:'<path d="M23 7 v10"/><circle cx="23" cy="23" r="1.4" fill="currentColor"/>'}
+];
+
+let stim = [], i = 0, answers = {};
+
+fetch('stimuli.json').then(r => r.json()).then(d => {
+  stim = d.slice();
+  for (let k = stim.length - 1; k > 0; k--) {         // per-participant order
+    const j = Math.floor(Math.random() * (k + 1));
+    [stim[k], stim[j]] = [stim[j], stim[k]];
+  }
+  document.getElementById('fN').textContent = stim.length;
+  const saved = load();
+  if (saved && Object.keys(saved.answers || {}).length) {
+    answers = saved.answers;
+    if (saved.order) stim = saved.order;
+    i = saved.i || 0;
+    const b = document.getElementById('resumeBtn');
+    b.hidden = false;
+    b.textContent = `Resume (${Object.keys(answers).length} done)`;
+    document.getElementById('clearBtn').hidden = false;
+  }
+  buildOptions();
+}).catch(() => alert('Could not load the images. Please reload the page.'));
+
+function buildOptions(){
+  const box = document.getElementById('opts');
+  box.innerHTML = '';
+  OPTIONS.forEach(o => {
+    const b = document.createElement('button');
+    b.className = 'opt' + (o.v === 'none' ? ' wide' : '');
+    b.innerHTML = svg(o.s) + '<b>' + o.n + '</b>'
+                + (o.h ? '<small>' + o.h + '</small>' : '');
+    b.onclick = () => choose(o.v);
+    box.appendChild(b);
+  });
+}
+
+/* ---------- persistence ---------- */
+function save(){
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(
+    {v:2, answers, i, order:stim, ts:Date.now()})); } catch(e){}
+}
+function load(){
+  try { return JSON.parse(localStorage.getItem(SAVE_KEY) || 'null'); }
+  catch(e){ return null; }
+}
+function clearSaved(){
+  try { localStorage.removeItem(SAVE_KEY); localStorage.removeItem(QUEUE_KEY); }
+  catch(e){}
+  location.reload();
+}
+
+/* ---------- automatic submission ----------
+   Each answer is sent as it happens, so someone who answers twelve
+   buildings and closes the tab still contributes twelve trials. Failed
+   sends stay queued and retry on the next answer and the next visit. */
+function loadQueue(){
+  try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]'); }
+  catch(e){ return []; }
+}
+function saveQueue(q){
+  try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); } catch(e){}
+}
+let flushing = false;
+async function flush(){
+  if (!RESULTS_ENDPOINT || flushing) return;
+  const q = loadQueue();
+  if (!q.length) return;
+  flushing = true;
+  try {
+    // text/plain avoids a CORS preflight, which Apps Script does not answer
+    const res = await fetch(RESULTS_ENDPOINT, {
+      method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body: JSON.stringify({session:SESSION, task:'rooftype', rows:q})
+    });
+    if (res.ok) saveQueue([]);
+  } catch(e){ /* stay queued */ }
+  finally { flushing = false; }
+}
+function record(img, choice){
+  const q = loadQueue();
+  q.push({img, choice, ts:Date.now()});
+  saveQueue(q);
+  flush();
+}
+window.addEventListener('pagehide', () => {
+  const q = loadQueue();
+  if (RESULTS_ENDPOINT && q.length && navigator.sendBeacon) {
+    navigator.sendBeacon(RESULTS_ENDPOINT, new Blob(
+      [JSON.stringify({session:SESSION, task:'rooftype', rows:q})],
+      {type:'text/plain;charset=utf-8'}));
+  }
+});
+
+/* ---------- flow ---------- */
+function start(){ if (stim.length){ i = 0; answers = {}; go(); } }
+function resume(){ if (stim.length) go(); }
+function go(){
+  document.getElementById('intro').hidden = true;
+  document.getElementById('done').hidden = true;
+  document.getElementById('task').hidden = false;
+  window.scrollTo(0,0);
+  show();
+}
+function show(){
+  while (i < stim.length && answers[stim[i].img] !== undefined) i++;
+  if (i >= stim.length){ finish(true); return; }
+  document.getElementById('stim').src = 'img/' + stim[i].img;
+  document.getElementById('counter').textContent = `Building ${i+1} of ${stim.length}`;
+  const n = Object.keys(answers).length;
+  document.getElementById('answered').textContent = `${n} answered`;
+  document.getElementById('prog').style.width = (100*n/stim.length) + '%';
+}
+function choose(v){ answers[stim[i].img] = v; record(stim[i].img, v); i++; save(); show(); }
+function skip(){ record(stim[i].img, '(skipped)'); i++; save(); show(); }
+
+function finish(complete){
+  document.getElementById('task').hidden = true;
+  document.getElementById('done').hidden = false;
+  window.scrollTo(0,0);
+  const n = Object.keys(answers).length;
+  document.getElementById('doneMsg').textContent = complete
+    ? `That is all ${n} buildings — thank you for completing the study.`
+    : `You answered ${n} of ${stim.length} buildings. Partial responses are `
+      + `just as usable, so nothing is wasted.`;
+  const block = document.getElementById('submitBlock');
+  const payload = {v:2, task:'rooftype', session:SESSION, ts:Date.now(), n, answers};
+  if (RESULTS_ENDPOINT){
+    block.innerHTML = '<p class="note">Saving…</p>';
+    flush().then(() => {
+      block.innerHTML = loadQueue().length
+        ? '<p class="note">Your answers are saved on this device and will be '
+          + 'sent automatically next time you open this page with a '
+          + 'connection. You may close this tab.</p>'
+        : '<p class="note">Your responses were saved. You may close this tab.</p>';
+    });
+  } else { showCode(block, payload); }
+}
+function showCode(block, payload){
+  const code = btoa(JSON.stringify(payload));
+  block.innerHTML = '<p class="note">Please send this result code back to the '
+    + 'researcher:</p><code id="code">' + code + '</code>'
+    + '<div class="row"><button class="act" onclick="copyCode()">Copy code</button>'
+    + '<button class="ghost" onclick="dl()">Download as file</button></div>';
+  window._payload = payload;
+}
+function copyCode(){
+  navigator.clipboard.writeText(document.getElementById('code').textContent)
+    .then(() => alert('Copied.'));
+}
+function dl(){
+  const blob = new Blob([JSON.stringify(window._payload, null, 1)],
+                        {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'study-response.json';
+  a.click();
+}
+</script>
+</body>
+</html>
