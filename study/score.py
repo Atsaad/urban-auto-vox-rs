@@ -89,16 +89,27 @@ def main() -> None:
         # silently weight one participant's answer above another's. The
         # FIRST answer is kept, since a later duplicate is a resend of
         # the same choice rather than a change of mind.
+        # Read by HEADER NAME, not column position: a Google Sheet export
+        # and a Supabase export carry the same fields in different orders
+        # (Supabase adds id/created_at), and positional parsing would
+        # silently mis-assign them.
         import csv as _csv
         by_session: dict[str, dict[str, str]] = defaultdict(dict)
         dupes = skipped = 0
         with open(a.sheet, newline="") as fh:
-            for row in _csv.reader(fh):
-                if len(row) < 5:
+            rdr = _csv.DictReader(fh)
+            need = {"session", "img", "choice"}
+            missing = need - set(rdr.fieldnames or [])
+            if missing:
+                raise SystemExit(
+                    f"{a.sheet}: missing column(s) {sorted(missing)}; "
+                    f"found {rdr.fieldnames}")
+            for rec in rdr:
+                sess = (rec.get("session") or "").strip()
+                img = (rec.get("img") or "").strip()
+                choice = (rec.get("choice") or "").strip()
+                if not sess or not img:
                     continue
-                sess, _srv, _cli, img, choice = row[0], row[1], row[2], row[3], row[4]
-                if sess.lower() == "session" or not img:
-                    continue                       # header row
                 if choice == "(skipped)":
                     skipped += 1
                     continue                       # not an answer

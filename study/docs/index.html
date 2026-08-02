@@ -190,12 +190,24 @@
 // who forgets to send it.
 // ---------------------------------------------------------------------
 // ---------------------------------------------------------------------
-// >>> SET THIS BEFORE PUBLISHING <<<
-// Paste the Google Apps Script /exec URL (study/README.md section 3).
-// Leaving it null is SAFE -- the page falls back to showing a result
-// code -- but a localhost URL is NOT: a published page would post to
-// each visitor's own machine, fail silently, and lose every response.
-const RESULTS_ENDPOINT = null;
+// Where answers go. Two backends are supported; set ONE.
+//
+// Supabase (preferred -- roughly 50 ms per write). A plain REST insert,
+// no SDK and no extra script tag, so the page stays self-contained.
+// The anon key is MEANT to be public: it is restricted by a row-level
+// security policy that permits INSERT and nothing else, so a visitor can
+// submit answers but cannot read anyone's, including their own.
+//
+// Google Apps Script (fallback, ~300-800 ms per write). Every POST goes
+// through a 302 redirect and appendRow takes a lock on the sheet, which
+// is why it feels slow.
+// ---------------------------------------------------------------------
+const SUPABASE_URL = "https://gctypkighhmblxbxdckv.supabase.co";
+const SUPABASE_KEY = "sb_publishable_oZtTcRTl4h84LZQyPQyiHg_DUtLbG3m";
+
+const RESULTS_ENDPOINT = "https://script.google.com/macros/s/AKfycbyLw9jspzqmxg7hRmcupCNlRk8rrHyMCULVRRSPtJSNkLhVeZRzLkHGJ0vAay9dIX-jwA/exec";
+
+const USE_SUPABASE = !!(SUPABASE_URL && SUPABASE_KEY);
 
 const SAVE_KEY  = 'uav-rooftype-v2';
 const QUEUE_KEY = 'uav-rooftype-queue-v2';
@@ -321,18 +333,38 @@ function saveQueue(q){
 }
 let flushing = false;
 async function flush(){
-  if (!RESULTS_ENDPOINT || flushing) return;
+  if (!(USE_SUPABASE || RESULTS_ENDPOINT) || flushing) return;
   const q = loadQueue();
   if (!q.length) return;
   flushing = true;
   try {
-    // text/plain avoids a CORS preflight, which Apps Script does not answer
-    const res = await fetch(RESULTS_ENDPOINT, {
-      method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
-      body: JSON.stringify({session:SESSION, task:'rooftype', rows:q})
-    });
+    let res;
+    if (USE_SUPABASE) {
+      // One insert for the whole queue, so a backlog costs one request.
+      res = await fetch(SUPABASE_URL + '/rest/v1/responses', {
+        method:'POST',
+        headers:{
+          'apikey': SUPABASE_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_KEY,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal'      // do not send the rows back
+        },
+        body: JSON.stringify(q.map(r => ({
+          session: SESSION,
+          client_time: new Date(r.ts).toISOString(),
+          img: r.img,
+          choice: r.choice
+        })))
+      });
+    } else {
+      // text/plain avoids a CORS preflight, which Apps Script does not answer
+      res = await fetch(RESULTS_ENDPOINT, {
+        method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
+        body: JSON.stringify({session:SESSION, task:'rooftype', rows:q})
+      });
+    }
     if (res.ok) saveQueue([]);
-  } catch(e){ /* stay queued */ }
+  } catch(e){ /* stay queued, retry on the next answer or visit */ }
   finally { flushing = false; }
 }
 function record(img, choice){
@@ -343,7 +375,17 @@ function record(img, choice){
 }
 window.addEventListener('pagehide', () => {
   const q = loadQueue();
-  if (RESULTS_ENDPOINT && q.length && navigator.sendBeacon) {
+  if (!q.length || !navigator.sendBeacon) return;
+  if (USE_SUPABASE) {
+    // sendBeacon cannot set an apikey header, so the key rides as a query
+    // parameter -- supported by PostgREST and no less safe, since the key
+    // is public by design.
+    navigator.sendBeacon(
+      SUPABASE_URL + '/rest/v1/responses?apikey=' + encodeURIComponent(SUPABASE_KEY),
+      new Blob([JSON.stringify(q.map(r => ({
+        session: SESSION, client_time: new Date(r.ts).toISOString(),
+        img: r.img, choice: r.choice })))], {type:'application/json'}));
+  } else if (RESULTS_ENDPOINT) {
     navigator.sendBeacon(RESULTS_ENDPOINT, new Blob(
       [JSON.stringify({session:SESSION, task:'rooftype', rows:q})],
       {type:'text/plain;charset=utf-8'}));

@@ -110,6 +110,68 @@ cd study/docs && python3 -m http.server 8000
 
 ## 3. Collecting responses automatically
 
+Answers are sent **as they happen**, one request per answer. A participant
+who answers twelve buildings and closes the tab still contributes twelve
+trials — nothing depends on them reaching a submit button. Failed sends
+stay queued in `localStorage` and retry on the next answer and the next
+visit, and `sendBeacon` makes a final attempt if the tab is closed
+mid-session.
+
+Two backends are supported. Set **one** in `docs/index.html`.
+
+### Option A — Supabase (recommended, ~50 ms per write)
+
+Apps Script takes 300–800 ms per write: every POST goes through a 302
+redirect and `appendRow` locks the sheet. Supabase is a plain REST insert
+into Postgres — no SDK, no extra script tag, so the page stays
+self-contained.
+
+1. Create a project at supabase.com (free tier is far beyond what this
+   study needs).
+2. **SQL Editor**, run:
+
+```sql
+create table responses (
+  id          bigserial primary key,
+  session     text        not null,
+  client_time timestamptz,
+  img         text        not null,
+  choice      text        not null,
+  created_at  timestamptz default now()
+);
+
+-- The anon key is embedded in a public web page, so the table must be
+-- protected by policy rather than by secrecy. Allow INSERT only:
+-- a visitor can submit answers and cannot read anyone's, including
+-- their own. Without this, the anon key would expose every response.
+alter table responses enable row level security;
+
+create policy "anon can insert" on responses
+  for insert to anon with check (true);
+```
+
+3. **Project Settings → API**, copy the URL and the `anon` `public` key.
+4. Put them in `docs/index.html`:
+
+```javascript
+const SUPABASE_URL = "https://abcdefgh.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOi...";
+```
+
+Leave `RESULTS_ENDPOINT` as it is — the page prefers Supabase whenever
+both keys are set.
+
+5. Export with **Table Editor → responses → Export → CSV**, then
+   `score.py --sheet responses.csv`.
+
+**On the anon key being public.** That is how Supabase is designed: the
+key identifies the project, not a user, and access is governed by the
+row-level security policy above. With insert-only, the worst a visitor
+can do is add rows. Do **not** paste the `service_role` key into the
+page — that one bypasses RLS entirely.
+
+### Option B — Google Apps Script (fallback)
+
 Answers are sent **as they happen**, one POST per answer. A participant
 who answers twelve buildings and closes the tab still contributes twelve
 trials — nothing depends on them reaching a submit button or emailing a
@@ -117,27 +179,50 @@ code back. Failed sends stay queued in `localStorage` and retry on the
 next answer and the next visit, and `sendBeacon` makes a final attempt if
 the tab is closed mid-session.
 
-GitHub Pages is static and cannot receive a POST, so the endpoint is a
+GitHub Pages is static and cannot receive a POST, so this option uses a
 free Google Apps Script web app writing into a Google Sheet.
 
-### Set it up (about five minutes)
+#### Set it up (about five minutes)
 
-1. Create a new Google Sheet. Name the first tab `responses`.
+1. Create a new Google Sheet. The script creates a `responses` tab
+   itself, so the tab name does not matter.
 2. **Extensions → Apps Script**, delete the placeholder, paste:
 
 ```javascript
 function doPost(e) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet()
-                            .getSheetByName('responses');
-  var body = JSON.parse(e.postData.contents);
-  var now  = new Date();
-  // One row per trial: session, server time, client time, image, choice.
-  (body.rows || []).forEach(function (r) {
-    sheet.appendRow([body.session, now, new Date(r.ts), r.img, r.choice]);
-  });
-  return ContentService
-    .createTextOutput(JSON.stringify({ok: true, n: (body.rows || []).length}))
-    .setMimeType(ContentService.MimeType.JSON);
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+    // Do NOT rely on the tab being called "responses": a Sheet created
+    // in a non-English locale names its first tab something else
+    // (German: "Tabellenblatt1"), getSheetByName returns null, and
+    // appendRow then throws on every request that carries a row --
+    // silently, because a request with zero rows still succeeds.
+    var sheet = ss.getSheetByName('responses');
+    if (!sheet) {
+      sheet = ss.insertSheet('responses');
+      sheet.appendRow(['session', 'server_time', 'client_time',
+                       'img', 'choice']);
+    }
+
+    var body = JSON.parse(e.postData.contents);
+    var now  = new Date();
+    var rows = body.rows || [];
+    rows.forEach(function (r) {
+      sheet.appendRow([body.session, now, new Date(r.ts), r.img, r.choice]);
+    });
+
+    return ContentService
+      .createTextOutput(JSON.stringify({ok: true, n: rows.length}))
+      .setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    // Return the error instead of throwing, so a misconfiguration is
+    // visible in the response rather than appearing as a dead endpoint.
+    return ContentService
+      .createTextOutput(JSON.stringify({ok: false, error: String(err)}))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
 }
 ```
 
