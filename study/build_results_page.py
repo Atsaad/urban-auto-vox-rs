@@ -162,7 +162,7 @@ const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 async function unlock(){
   const pw = document.getElementById('pw').value;
   const err = document.getElementById('err');
-  err.textContent = 'Deriving key…';
+  err.textContent = 'Deriving key… (a few seconds)';
   try{
     const base = await crypto.subtle.importKey('raw', enc.encode(pw), 'PBKDF2', false, ['deriveKey']);
     const key = await crypto.subtle.deriveKey(
@@ -172,7 +172,10 @@ async function unlock(){
     const payload = JSON.parse(dec.decode(pt));
     document.getElementById('gate').hidden = true;
     document.getElementById('app').hidden = false;
-    render(payload);
+    // render() is async: without this catch any failure inside it becomes a
+    // silent unhandled rejection and the page sits on "Loading responses..."
+    // forever with nothing to diagnose.
+    render(payload).catch(showFailure);
   }catch(e){
     // AES-GCM authenticates, so a wrong passphrase fails to decrypt
     // rather than yielding garbage. There is nothing to brute-force in
@@ -202,18 +205,47 @@ function bar(label,k,n,slot){
     <td class="num muted">${n}</td></tr>`;
 }
 
+function showFailure(e){
+  document.getElementById('app').innerHTML =
+    `<div class="callout" style="border-left-color:var(--bad)">
+       <strong>Could not load the responses.</strong>
+       <p style="margin:.6em 0 0"><code>${esc(e && e.message || e)}</code></p>
+       <p class="muted small" style="margin:.6em 0 0">
+         Most often this is a browser extension blocking the request, or no
+         network. Open the browser console for the full error.</p>
+     </div>`;
+  console.error(e);
+}
+
 async function render(p){
   const app = document.getElementById('app');
-  app.innerHTML = '<p class="muted">Loading responses…</p>';
+  const say = t => { app.innerHTML = `<p class="muted">${t}</p>`; };
+  say('Loading responses…');
+
   let raw = [], from = 0;
   while(true){
-    const r = await fetch(`${p.url}/rest/v1/responses?select=*&order=id.asc&offset=${from}&limit=1000`,
-      {headers:{apikey:p.sb, Authorization:'Bearer '+p.sb}});
+    let r;
+    try{
+      r = await fetch(`${p.url}/rest/v1/responses?select=*&order=id.asc&offset=${from}&limit=1000`,
+        {headers:{apikey:p.sb, Authorization:'Bearer '+p.sb}});
+    }catch(netErr){
+      // fetch only rejects on a network-level failure: offline, DNS, CORS
+      // refusal, or a blocker. A 4xx/5xx resolves normally and is handled
+      // below, so the two cases get different messages.
+      throw new Error('Network request failed — check your connection, or an '
+        + 'extension may be blocking supabase.co. (' + netErr.message + ')');
+    }
+    if(!r.ok){
+      throw new Error('Supabase returned HTTP ' + r.status + ' — '
+        + (await r.text()).slice(0,160));
+    }
     const b = await r.json();
     raw = raw.concat(b);
+    say(`Loading responses… ${raw.length} rows`);
     if(b.length < 1000) break;
     from += 1000;
   }
+  say(`Scoring ${raw.length} rows…`);
 
   // de-duplicate on (session,img): a retry that lands twice must not
   // weight one participant above another
