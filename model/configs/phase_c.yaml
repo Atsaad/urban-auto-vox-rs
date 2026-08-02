@@ -1,0 +1,68 @@
+# Phase C -- v5 at ten times the data.
+#
+# ONE variable changes from v5: the training set grows from 10,000 to
+# 100,000 buildings. Composition is held constant, and was verified
+# rather than assumed -- function mix within 0.5 pp of v5, roof mix
+# within 0.5 pp, height median 5.03 m against 5.02 m. Only the quantity
+# differs.
+#
+# The question this answers is stated in advance (thesis
+# §sec:conc-phase-c): coverage should improve, closure should not.
+# Coverage was 40.9 % for v5 against an ideal of 100 %, with the
+# shortfall concentrated in the heterogeneous non-residential class, and
+# more data is the standard remedy. The closure defect is a property of
+# the objective -- v5 established that a per-voxel target cannot express
+# a global topological constraint -- so it should survive any quantity
+# of data. If closure improves substantially here, that prediction is
+# wrong and the thesis argument needs revising.
+#
+# Run:
+#   ./model/.venv/bin/python -m model.src.train --config model/configs/phase_c.yaml
+#
+# NOTE ON EPOCHS. 100,000 iterations at batch 8 is 800,000 samples: ~8
+# passes over this set, against ~80 for v5. Iteration count is held
+# fixed deliberately so the comparison isolates data quantity. Whether
+# longer training would help at this scale is a separate question and
+# should not be silently folded in here.
+
+shards_dir: tensorbuilding/shards_phase_c
+manifest_path: tensorbuilding/shards_phase_c/manifest.csv
+subset: 0
+
+batch_size: 8
+# 4 rather than v5's 2: 100 shards mean more random file access. This
+# affects throughput only, never the result, so it is not a variable of
+# the experiment.
+num_workers: 4
+
+# --- architecture: IDENTICAL to v5 (and to v4) -----------------------
+# in_channels comes from the dataset's tensor shape, so the 7-channel
+# interior target propagates automatically.
+base_channels: 32
+channel_mults: [1, 2, 4, 4]
+cond_dim: 256
+time_embed_dim: 256
+blocks_per_level: 2
+
+# --- diffusion + optimiser: IDENTICAL to v5 --------------------------
+n_timesteps: 1000
+lr: 0.0001
+warmup_iters: 1000
+weight_decay: 0.0005
+ema_decay: 0.999
+p_drop_cond: 0.1
+grad_clip: 0.5
+amp: true
+parameterization: x0
+fg_loss_weight: 0.0
+
+iters: 100000
+log_every: 100
+save_every: 2000        # ~20 min of exposure at 1.7 it/s, not ~49
+sample_every: 2500
+sample_seeds: [42, 43, 44, 45]
+sample_n_steps: 50
+sample_guidance: 0.0        # see claude.md §44
+
+out_dir: model/checkpoints/phase_c
+seed: 42

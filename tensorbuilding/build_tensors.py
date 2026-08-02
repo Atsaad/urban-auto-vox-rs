@@ -45,7 +45,7 @@ import os
 import random
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import h5py
 import numpy as np
@@ -164,6 +164,109 @@ def select_buildings(meta_csv, fit_set, args, prefixes):
     return chosen
 
 
+INTERIOR_CHANNEL = 6
+INTERIOR_NAME = "interior"
+
+
+def _dilate6(x):
+    """One step of 6-CONNECTED dilation (face neighbours + self).
+
+    NOT max_pool3d(x, 3): a 3x3x3 kernel is 26-connected and lets the
+    flood leak diagonally through a shell that is watertight under
+    6-connectivity. That mismatch silently reported 27 of 40 real
+    buildings as open when it was tested against the reference DFS.
+    Three axis-aligned pools give exactly the 6-neighbourhood, matching
+    the definition used by `evaluate.py`.
+    """
+    import torch
+    import torch.nn.functional as F
+    return torch.maximum(
+        torch.maximum(F.max_pool3d(x, (3, 1, 1), 1, (1, 0, 0)),
+                      F.max_pool3d(x, (1, 3, 1), 1, (0, 1, 0))),
+        F.max_pool3d(x, (1, 1, 3), 1, (0, 0, 1)))
+
+
+def _exterior_reachable_batch(shells, device=None):
+    """Empty voxels reachable from outside, for a BATCH of buildings.
+
+    A flood fill from the grid boundary, expressed as repeated
+    6-connected dilation intersected with free space. Batching is what
+    makes this viable at dataset scale: one pooling call floods every
+    building in the batch at once, whereas the reference DFS in
+    evaluate.py walks voxels in Python and costs ~0.24 s per building.
+
+    Pads by one so the flood has somewhere to start even when a building
+    touches the grid boundary.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    shells = np.ascontiguousarray(shells)
+    free = torch.from_numpy(~shells).to(device).float()[:, None]
+    free = F.pad(free, (1, 1, 1, 1, 1, 1), value=1.0)
+    reach = torch.zeros_like(free)
+    reach[:, :, 0, 0, 0] = 1.0                    # padded corner is outside
+    for _ in range(3 * shells.shape[-1] + 8):     # cap; normally breaks early
+        nxt = _dilate6(reach) * free
+        if torch.equal(nxt, reach):
+            break
+        reach = nxt
+    return reach[:, 0, 1:-1, 1:-1, 1:-1].cpu().numpy() > 0.5
+
+
+def _exterior_reachable(shell, device=None):
+    """Single-building convenience wrapper around the batch version."""
+    return _exterior_reachable_batch(shell[None], device)[0]
+
+
+def add_interior_channel(grid, close_first=True):
+    """Append an `interior` channel: the volume the shell encloses.
+
+    Rationale (claude.md §47): the v4 objective is a per-voxel
+    cross-entropy with no term rewarding closure, so an open shell costs
+    almost nothing. Labelling the enclosed volume converts closure from a
+    topological property into a dense per-voxel target the existing loss
+    can learn directly, and cuts the class imbalance as a side effect.
+
+    Returns (grid7, status, n_interior) where status is one of:
+      "filled"  -- enclosed directly
+      "closed"  -- only after a 1-voxel morphological closing
+      "open"    -- could not be enclosed; interior left empty
+
+    About 8 % of real buildings are not watertight at 0.5 m. Those are
+    labelled "open" and kept shell-only rather than silently dropped, so
+    the count is auditable from the manifest afterwards.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    T = grid.shape[1]
+    shell = grid[1:].sum(axis=0) > 0
+    interior = ~shell & ~_exterior_reachable(shell)
+    status = "filled"
+
+    if interior.sum() == 0 and close_first:
+        # Seal one-voxel gaps, fill against the sealed shell, then keep
+        # only voxels that are empty in the ORIGINAL grid -- the closing
+        # is a probe for what the shell was trying to enclose, it must
+        # not add material to the output.
+        x = torch.from_numpy(shell).float()[None, None]
+        x = F.max_pool3d(x, 3, stride=1, padding=1)
+        x = -F.max_pool3d(-x, 3, stride=1, padding=1)
+        closed = x[0, 0].numpy() > 0.5
+        cand = ~closed & ~_exterior_reachable(closed)
+        interior = cand & ~shell
+        status = "closed" if interior.sum() else "open"
+
+    out = np.zeros((INTERIOR_CHANNEL + 1, T, T, T), dtype=np.uint8)
+    out[:INTERIOR_CHANNEL] = grid[:INTERIOR_CHANNEL]
+    out[INTERIOR_CHANNEL] = interior.astype(np.uint8)
+    out[0] = (out[1:].sum(axis=0) == 0).astype(np.uint8)   # recompute `empty`
+    return out, status, int(interior.sum())
+
+
 def build_tensor(coords, classes, target, vs):
     """coords (N,3) float UTM, classes (N,) int -> (C,T,T,T) uint8 ONE-HOT.
 
@@ -250,6 +353,9 @@ def main():
                          "or '09162,09761,09564,09663,09362'). Empty = no city filter.")
     ap.add_argument("--tag", default="dataset",
                     help="shard filename prefix (e.g. 5cities_balanced)")
+    ap.add_argument("--interior", action="store_true",
+                    help="add a 7th `interior` channel by flood-filling the "
+                         "enclosed volume (v5 target; see claude.md §47)")
     args = ap.parse_args()
 
     # Resolve --cities to an ordered list of AGS prefixes (preserves user order).
@@ -277,8 +383,11 @@ def main():
     for row in chosen:
         by_chunk[fit_chunk[row["gmlid"]]][row["gmlid"]] = row
     log(f"chosen buildings span {len(by_chunk)} chunks")
+    if args.interior:
+        log("interior channel ENABLED -> 7-channel v5 targets")
 
     manifest = []
+    interior_stats = Counter()
     skipped_unknown = 0
     written = 0
     shard_idx = 0
@@ -292,7 +401,8 @@ def main():
         shard.attrs["voxel_size"] = args.voxel_size
         shard.attrs["target"] = args.target
         shard.attrs["srid"] = 25832
-        shard.attrs["channel_names"] = ",".join(CHANNEL_NAMES)
+        shard.attrs["channel_names"] = ",".join(
+            CHANNEL_NAMES + ([INTERIOR_NAME] if args.interior else []))
         shard_count = 0
         return path
 
@@ -320,6 +430,11 @@ def main():
                 log(f"  WARN {g} extent {extent.tolist()} > {args.target}, skipped")
                 continue
 
+            int_status, int_vox = "", 0
+            if args.interior:
+                grid, int_status, int_vox = add_interior_channel(grid)
+                interior_stats[int_status] += 1
+
             if shard_count >= args.shard_size:
                 shard.close()
                 shard_idx += 1
@@ -329,7 +444,7 @@ def main():
             grp = shard.create_group(f"buildings/{g}")
             grp.create_dataset("tensor", data=grid, dtype="uint8",
                                compression="gzip", compression_opts=4,
-                               chunks=(N_CHANNELS, 16, 16, 16))
+                               chunks=(grid.shape[0], 16, 16, 16))
             cont = np.array([_f(meta.get(k)) for k in META_CONTINUOUS], dtype=np.float32)
             grp.create_dataset("conditions_continuous", data=cont)
             for k in META_CATEGORICAL:
@@ -339,19 +454,45 @@ def main():
             grp.attrs["centrepoint"] = meta.get("centrepoint", "") or ""
             grp.attrs["n_voxels"] = int(coords.shape[0])
             grp.attrs["extent"] = extent.astype(np.int32)
-            occ = [int(grid[c].sum()) for c in range(N_CHANNELS)]
+            occ = [int(grid[c].sum()) for c in range(grid.shape[0])]
             grp.attrs["occupied_per_channel"] = np.array(occ, dtype=np.int32)
 
+            # Manifest row. Column ORDER here defines the CSV column order
+            # (DictWriter takes fieldnames from the first row's keys), and is
+            # kept identical to the manifest that trained Phase B v4 so the
+            # two datasets stay directly comparable.
+            #
+            # IMPORTANT (fixed 2026-07-27): this dict previously omitted
+            # length_to_width_ratio, storeys_above_ground, ratio_cluster,
+            # kreis and gemeinde. Because model/src/dataset.py reads its
+            # conditioning fields from the MANIFEST (not from the HDF5
+            # attrs), that silently zeroed three of the ten conditioning
+            # fields — ratio_cluster collapsed to the null token alone, and
+            # both continuous geometry fields became 0. The v4 dataset only
+            # escaped this because a one-off post-hoc patch added the
+            # columns afterwards (see manifest.csv.bak_pre_p1). Every field
+            # the model consumes is now written here directly, so the
+            # pipeline is correct by construction and needs no patch step.
             manifest.append({
                 "gmlid": g, "chunk_id": chunk_id, "shard": os.path.basename(cur_path),
+                "interior_status": int_status, "interior_voxels": int_vox,
                 "function_label": meta.get("function_label", ""),
                 "roof_type_label": meta.get("roof_type_label", ""),
+                # -- continuous conditioning fields (dataset.py CONTINUOUS_COLS)
                 "measured_height": meta.get("measured_height", ""),
-                "height_cluster": meta.get("height_cluster", ""),
-                "gemeindeschluessel": meta.get("gemeindeschluessel", ""),
-                # Enrichment columns (empty if --meta is the unenriched CSV).
-                "estimatedConstructionPeriod": meta.get("estimatedConstructionPeriod", ""),
+                "length_to_width_ratio": meta.get("length_to_width_ratio", ""),
+                "storeys_above_ground": meta.get("storeys_above_ground", ""),
                 "constructionPeriodConfidence": meta.get("constructionPeriodConfidence", ""),
+                # -- categorical conditioning fields (dataset.py CATEGORICAL_COLS)
+                "height_cluster": meta.get("height_cluster", ""),
+                "ratio_cluster": meta.get("ratio_cluster", ""),
+                # -- administrative provenance (not model inputs, but needed
+                #    for per-city stratification and hold-out experiments)
+                "gemeindeschluessel": meta.get("gemeindeschluessel", ""),
+                "kreis": meta.get("kreis", ""),
+                "gemeinde": meta.get("gemeinde", ""),
+                # -- enrichment columns (empty if --meta is the unenriched CSV)
+                "estimatedConstructionPeriod": meta.get("estimatedConstructionPeriod", ""),
                 "constructionPeriodReliability": meta.get("constructionPeriodReliability", ""),
                 "storeys_source": meta.get("storeys_source", ""),
                 "w": int(extent[0]), "d": int(extent[1]), "h": int(extent[2]),
@@ -371,10 +512,67 @@ def main():
         w.writeheader()
         w.writerows(manifest)
 
+    # ---- manifest contract check ------------------------------------
+    # model/src/dataset.py reads its conditioning fields from THIS file,
+    # not from the HDF5 attrs. A field that is missing, or present but
+    # universally empty, silently degrades to the null token (categorical)
+    # or 0.0 (continuous) and the model trains on a crippled condition
+    # vector while every log line still looks healthy. That is exactly how
+    # ratio_cluster / length_to_width_ratio / storeys_above_ground were
+    # lost before 2026-07-27, so the failure mode is checked here rather
+    # than left to be discovered during training.
+    _REQUIRED_CATEGORICAL = [
+        "function_label", "roof_type_label", "height_cluster", "ratio_cluster",
+        "estimatedConstructionPeriod", "constructionPeriodReliability",
+    ]
+    _REQUIRED_CONTINUOUS = [
+        "measured_height", "length_to_width_ratio",
+        "constructionPeriodConfidence", "storeys_above_ground",
+    ]
+    cols = set(manifest[0].keys())
+    problems = []
+    for k in _REQUIRED_CATEGORICAL + _REQUIRED_CONTINUOUS:
+        if k not in cols:
+            problems.append(f"MISSING column '{k}'")
+            continue
+        n_set = sum(1 for r in manifest if str(r.get(k, "")).strip() not in ("", "nan"))
+        if n_set == 0:
+            problems.append(f"column '{k}' present but EMPTY in all {len(manifest):,} rows")
+        elif n_set < len(manifest) * 0.5:
+            log(f"  NOTE: '{k}' populated in only {n_set:,}/{len(manifest):,} rows "
+                f"({100*n_set/len(manifest):.1f}%)")
+
+    if problems:
+        log("")
+        log("!! MANIFEST CONTRACT VIOLATION — the model would train on a")
+        log("!! degraded conditioning vector. Fix before training:")
+        for p in problems:
+            log(f"!!   - {p}")
+        log("")
+        raise SystemExit(2)
+
+    log(f"manifest contract OK: {len(_REQUIRED_CATEGORICAL)} categorical + "
+        f"{len(_REQUIRED_CONTINUOUS)} continuous fields populated")
+
     log(f"DONE: {written:,} tensors in {shard_idx + 1} shard(s) -> {args.out_dir}")
     log(f"manifest -> {mpath}")
     if skipped_unknown:
         log(f"NOTE: skipped {skipped_unknown:,} Unknown(class 0) voxels")
+
+    if args.interior:
+        tot = sum(interior_stats.values()) or 1
+        log("interior fill outcome:")
+        for k in ("filled", "closed", "open"):
+            n = interior_stats.get(k, 0)
+            log(f"    {k:8s} {n:6,d}  ({100*n/tot:5.1f}%)")
+        # An all-open run means the fill silently failed and every v5
+        # target is a shell with no interior -- louder than a warning,
+        # because training on it would waste ~17 GPU hours.
+        if interior_stats.get("open", 0) > 0.5 * tot:
+            log("ERROR: >50% of buildings could not be enclosed. The fill "
+                "is probably broken (check 6- vs 26-connectivity). "
+                "Refusing to leave this unflagged.")
+            sys.exit(3)
     log(f"elapsed {time.time()-t0:.1f}s")
 
 

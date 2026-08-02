@@ -56,10 +56,21 @@ CH_NAMES = ["empty", "wall", "roof", "ground", "outer_ceiling", "closure"]
 
 # ---- projection helpers --------------------------------------------------
 def _label_field(tensor: np.ndarray) -> np.ndarray:
-    """(6, D, D, D) uint8 one-hot -> (D, D, D) int class labels 0..5."""
-    if tensor.ndim != 4 or tensor.shape[0] != 6:
-        raise ValueError(f"expected (6, D, D, D), got {tensor.shape}")
-    return tensor.argmax(axis=0)                        # (D, D, D)
+    """(C, D, D, D) uint8 one-hot -> (D, D, D) int class labels 0..5.
+
+    Accepts 6 channels (v4 shell targets) or 7 (v5, which adds an
+    `interior` channel; claude.md §47). Only the six SHELL channels are
+    used for rendering: the interior is a training target, not something
+    to look at, and drawing it would fill the building with an opaque
+    blob that hides the very surfaces the render exists to show.
+
+    Dropping channel 6 leaves interior voxels all-zero across the
+    remaining channels, so `argmax` resolves them to 0 (`empty`) and the
+    building draws as the hollow shell it is meant to depict.
+    """
+    if tensor.ndim != 4 or tensor.shape[0] < 6:
+        raise ValueError(f"expected (>=6, D, D, D), got {tensor.shape}")
+    return tensor[:6].argmax(axis=0)                    # (D, D, D)
 
 
 def _project_max_class(

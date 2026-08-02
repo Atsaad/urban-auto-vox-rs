@@ -46,9 +46,15 @@ voxel_csvs/
 chunk_processing.log
 chunk_failed.txt
 
-# Tensor building: keep build_tensors.py tracked, ignore the heavy/runtime data
+# Tensor building: keep build_tensors.py tracked, ignore the heavy/runtime data.
+# The glob covers every shard set -- shards/, shards_v5/ (119 MB),
+# shards_phase_c/ (1.2 GB) -- so a new one cannot be committed by accident.
 tensorbuilding/building_metadata_clean.csv
-tensorbuilding/shards/
+tensorbuilding/shards*/
+tensorbuilding/build_*.log
+
+# Pillar G: participant responses are data, not source
+study/responses/
 
 # Model training artefacts — code is tracked, weights/samples are not
 model/checkpoints/

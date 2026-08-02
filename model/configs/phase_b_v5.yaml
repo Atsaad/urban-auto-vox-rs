@@ -1,0 +1,66 @@
+# Phase B v5 -- v4 with an interior-supervised target.
+#
+# ONE variable changes from v4: the target representation gains a 7th
+# `interior` channel, produced by flood-filling the enclosed volume at
+# tensor-construction time (tensorbuilding/build_tensors.py --interior).
+#
+# Rationale (claude.md §47, thesis §sec:conc-v5). v4's sole unresolved
+# defect is that it does not produce closed shells -- 16.6 % watertight
+# against 92.1 % for real buildings, enclosing 1/42 of the real volume.
+# The cause is the objective: a per-voxel cross-entropy contains no term
+# rewarding closure, so an open shell costs one voxel of loss. Labelling
+# the interior converts closure into a dense per-voxel target the
+# existing loss already knows how to learn, and cuts the class imbalance
+# from 115:1 to 40:1 as a side effect.
+#
+# Everything else is held fixed -- architecture, capacity, optimiser,
+# schedule, iteration count, seed -- so any difference in the evaluation
+# is attributable to the target representation alone. This is the same
+# controlled-comparison discipline used across v1--v4.
+#
+# Run:
+#   ./model/.venv/bin/python -m model.src.train --config model/configs/phase_b_v5.yaml
+#
+# Note the sampler default below is w=0.0, NOT v4's 1.5: the guidance
+# sweep (claude.md §44) showed 1.5 causes the mode collapse that produced
+# most of v4's apparent defects. Progression samples at 1.5 would be
+# misleading.
+
+shards_dir: tensorbuilding/shards_v5
+manifest_path: tensorbuilding/shards_v5/manifest.csv
+subset: 0
+
+batch_size: 8
+num_workers: 2
+
+# --- architecture: IDENTICAL to v4 -----------------------------------
+# in_channels is not set here; train.py takes it from the dataset's own
+# tensor shape, so the 7-channel target propagates automatically.
+base_channels: 32
+channel_mults: [1, 2, 4, 4]
+cond_dim: 256
+time_embed_dim: 256
+blocks_per_level: 2
+
+# --- diffusion + optimiser: IDENTICAL to v4 --------------------------
+n_timesteps: 1000
+lr: 0.0001
+warmup_iters: 1000
+weight_decay: 0.0005
+ema_decay: 0.999
+p_drop_cond: 0.1
+grad_clip: 0.5
+amp: true
+parameterization: x0
+fg_loss_weight: 0.0
+
+iters: 100000
+log_every: 100
+save_every: 5000
+sample_every: 2500
+sample_seeds: [42, 43, 44, 45]
+sample_n_steps: 50
+sample_guidance: 0.0        # v4 used 1.5; see claude.md §44
+
+out_dir: model/checkpoints/phase_b_v5
+seed: 42

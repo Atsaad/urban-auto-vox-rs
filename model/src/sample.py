@@ -113,8 +113,17 @@ def load_checkpoint(ckpt_path: str, device: torch.device) -> dict:
         cond_dim=int(cfg.get("cond_dim", 256)),
     ).to(device)
 
+    # Channel count is read from the checkpoint's own stem weight rather
+    # than hardcoded: v4 targets have 6 channels, v5 adds a 7th `interior`
+    # channel (claude.md §47). Hardcoding 6 here would load a v5
+    # checkpoint into a 6-channel net and fail with a shape error --- or,
+    # worse, silently sample the wrong shape.
+    _stem = (ckpt.get("ema") or {}).get("shadow", ckpt["unet"])
+    n_ch = int(_stem["stem.weight"].shape[1]) if "stem.weight" in _stem \
+        else int(cfg.get("in_channels", 6))
+
     unet = UNet3D(
-        in_channels=6,
+        in_channels=n_ch,
         base_channels=int(cfg.get("base_channels", 64)),
         channel_mults=tuple(cfg.get("channel_mults", (1, 2, 4, 4))),
         cond_dim=int(cfg.get("cond_dim", 256)),
@@ -138,6 +147,7 @@ def load_checkpoint(ckpt_path: str, device: torch.device) -> dict:
         "vocabs": ckpt["vocabs"],
         "continuous_stats": ckpt["continuous_stats"],
         "cfg": cfg,
+        "n_channels": n_ch,
     }
 
 
@@ -194,7 +204,7 @@ def sample(
     n_steps: int = 50,
     guidance_scale: float = 1.5,
     device: torch.device | None = None,
-    shape: tuple[int, ...] = (6, 64, 64, 64),
+    shape: tuple[int, ...] | None = None,   # defaults to the model's own channels
     dtype: torch.dtype = torch.float32,
     parameterization: str = "eps",
 ) -> tuple[torch.Tensor, list[dict]]:
@@ -206,6 +216,10 @@ def sample(
     """
     if device is None:
         device = next(unet.parameters()).device
+    if shape is None:
+        # Take the channel count from the net itself so a 7-channel v5
+        # model is not silently sampled at 6 channels.
+        shape = (int(unet.stem.weight.shape[1]), 64, 64, 64)
     unet.eval(); cond_enc.eval()
 
     K = len(conditions)

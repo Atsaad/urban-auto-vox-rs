@@ -77,6 +77,11 @@ def main() -> None:
     ap.add_argument("--config", required=True)
     ap.add_argument("--override", nargs="*", default=[],
                     help="key=value overrides applied AFTER yaml load")
+    ap.add_argument("--resume", default="",
+                    help="resume from a checkpoint: a path to a .pt file, or "
+                         "'auto' to pick the highest-numbered ckpt_*.pt in "
+                         "out_dir. Restores model, EMA, optimiser, iteration "
+                         "counter and the loss/grad-norm history.")
     args = ap.parse_args()
 
     cfg = _load_config(args.config, args.override)
@@ -188,6 +193,76 @@ def main() -> None:
               f"= {len(DEFAULT_CONDITIONS) * len(sample_seeds)} samples per checkpoint")
     losses: list[float] = []
     grad_norms: list[float] = []
+    start_it = 0
+
+    # -- Resume ---------------------------------------------------------
+    # Restores model / EMA / optimiser / iteration counter AND the
+    # loss+grad-norm history. The history matters: losses.json is written
+    # from the in-memory list, so resuming without restoring it would
+    # truncate the curve to post-resume iterations only and quietly ruin
+    # the training figures.
+    #
+    # NOT restored (deliberately): the DataLoader shuffle position and the
+    # RNG stream. A resumed run therefore sees a different sample order
+    # than an uninterrupted one would. For diffusion training on 1.15 M
+    # samples this is immaterial, but it does mean a resumed run is not
+    # bit-identical to an unbroken one — state that when reporting.
+    if args.resume:
+        if args.resume == "auto":
+            cands = sorted(out_dir.glob("ckpt_*.pt"),
+                           key=lambda p: int(p.stem.split("_")[1]))
+            if not cands:
+                raise SystemExit(f"--resume auto: no ckpt_*.pt found in {out_dir}")
+            resume_path = cands[-1]
+        else:
+            resume_path = Path(args.resume)
+            if not resume_path.is_file():
+                raise SystemExit(f"--resume: not a file: {resume_path}")
+
+        print(f"[train] resuming from {resume_path}")
+        ck = torch.load(resume_path, map_location=device, weights_only=False)
+
+        # Guard: a checkpoint from a different architecture will either
+        # fail cryptically inside load_state_dict or, worse, load partially.
+        # Compare the shape-determining keys and refuse early if they differ.
+        prev_cfg = ck.get("config", {})
+        for k in ("base_channels", "channel_mults", "cond_dim",
+                  "time_embed_dim", "blocks_per_level"):
+            old, new = prev_cfg.get(k), cfg.get(k)
+            if old is not None and str(old) != str(new):
+                raise SystemExit(
+                    f"--resume: architecture mismatch on '{k}': checkpoint has "
+                    f"{old!r}, config has {new!r}. Resuming would corrupt the "
+                    f"model. Use a matching config or start a fresh run.")
+
+        unet.load_state_dict(ck["unet"])
+        cond_enc.load_state_dict(ck["cond_enc"])
+        ema.load_state_dict(ck["ema"])
+        optim.load_state_dict(ck["optim"])
+        start_it = int(ck.get("iter", 0))
+        losses = list(ck.get("losses", []))
+        grad_norms = list(ck.get("grad_norms", []))
+
+        if not losses:
+            # Checkpoint predates history-in-checkpoint; fall back to the
+            # sidecar files so the curve is still continuous.
+            for name, tgt in (("losses.json", losses),
+                              ("grad_norms.json", grad_norms)):
+                p = out_dir / name
+                if p.is_file():
+                    tgt.extend(json.loads(p.read_text())[:start_it])
+            print(f"[train] (history recovered from sidecar json)")
+
+        print(f"[train] resumed at iter {start_it:,}/{n_iters:,} "
+              f"— {len(losses):,} loss points restored")
+        if start_it >= n_iters:
+            raise SystemExit(
+                f"--resume: checkpoint is already at iter {start_it:,} >= "
+                f"iters {n_iters:,}. Nothing to do; raise `iters` to continue.")
+
+    def _dump_history() -> None:
+        (out_dir / "losses.json").write_text(json.dumps(losses))
+        (out_dir / "grad_norms.json").write_text(json.dumps(grad_norms))
 
     def _sample_hook(step: int) -> None:
         """Generate fixed-seed progression samples with the EMA weights."""
@@ -211,7 +286,7 @@ def main() -> None:
         titles = [f"{m['name']}\nseed={m['seed']}" for m in meta]
         render_grid(list(hard), titles=titles,
                     out_path=str(step_dir / "grid.png"),
-                    cols=M, suptitle=f"Phase-B progression @ step {step:,}")
+                    cols=M, suptitle=f"{Path(cfg['out_dir']).name} progression @ step {step:,}")
         # Also stash the raw tensors for future re-analysis.
         import numpy as np_
         np_.savez_compressed(step_dir / "samples.npz",
@@ -220,7 +295,7 @@ def main() -> None:
               f"({time.time()-t0:.1f}s)", flush=True)
 
     t_start = time.time()
-    it = 0
+    it = start_it
     loader_iter = iter(loader)
     while it < n_iters:
         try:
@@ -300,9 +375,17 @@ def main() -> None:
                 "config": cfg,
                 "vocabs": raw_ds.vocabs,
                 "continuous_stats": raw_ds.continuous_stats,
+                # History travels WITH the checkpoint so that --resume
+                # reconstructs a continuous curve. ~8 bytes/iter, so even a
+                # 200 K-iter run adds only ~3 MB to the file.
+                "losses": losses,
+                "grad_norms": grad_norms,
             }
             ckpt_path = out_dir / f"ckpt_{it:06d}.pt"
             torch.save(ckpt, ckpt_path)
+            # Mirror the history to json on every save, not just at the end,
+            # so an aborted run still leaves a usable curve on disk.
+            _dump_history()
             print(f"[train] saved {ckpt_path}")
 
         # Progression tracker -- generate fixed-seed samples at every
@@ -311,10 +394,10 @@ def main() -> None:
             _sample_hook(it)
 
     # Final loss + grad-norm log dump.
-    (out_dir / "losses.json").write_text(json.dumps(losses))
-    (out_dir / "grad_norms.json").write_text(json.dumps(grad_norms))
+    _dump_history()
+    _n = min(log_every, len(losses)) or 1
     print(f"[train] done in {time.time() - t_start:.1f}s — final mean loss "
-          f"(last {log_every}): {sum(losses[-log_every:]) / log_every:.4f}")
+          f"(last {_n}): {sum(losses[-_n:]) / _n:.4f}")
 
 
 if __name__ == "__main__":
