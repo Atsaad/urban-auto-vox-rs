@@ -83,6 +83,18 @@
 
   code{background:var(--line);padding:.15em .4em;border-radius:5px;font-size:.8em;
        word-break:break-all;display:block;margin:.7em 0}
+
+  /* Send status. The previous build failed silently: a failed POST left
+     the queue growing with nothing on screen to say so. This makes the
+     state visible at all times and gives an explicit retry. */
+  .status{display:flex;align-items:center;gap:.55em;margin-top:1.1em;
+          font-size:.86rem;color:var(--muted)}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--line);flex:none}
+  .dot.sending{background:#eda100;animation:pulse 1s ease-in-out infinite}
+  .dot.saved{background:#0ca30c}
+  .dot.pending{background:#d03b3b}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .status button.link{padding:0 .2em;color:var(--accent)}
 </style>
 </head>
 <body>
@@ -167,7 +179,11 @@
     <button class="ghost" onclick="skip()">Can't tell — skip</button>
     <button class="act" onclick="finish()">Stop &amp; submit</button>
   </div>
-  <p class="note" style="margin-top:1em">Saved automatically after every answer.</p>
+  <div class="status" id="status">
+    <span class="dot" id="dot"></span>
+    <span id="statusText">Nothing to send yet.</span>
+    <button class="link" id="sendNow" hidden onclick="sendNow()">Submit now</button>
+  </div>
 </div>
 
 <!-- ==================== DONE ==================== -->
@@ -331,12 +347,39 @@ function loadQueue(){
 function saveQueue(q){
   try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); } catch(e){}
 }
+// ---- send status -----------------------------------------------------
+// Three states, always on screen: sending, saved, or pending-with-a-retry.
+function setStatus(state, text, offerRetry){
+  const dot = document.getElementById('dot');
+  const txt = document.getElementById('statusText');
+  const btn = document.getElementById('sendNow');
+  if (!dot) return;
+  dot.className = 'dot' + (state ? ' ' + state : '');
+  txt.textContent = text;
+  btn.hidden = !offerRetry;
+}
+function refreshStatus(){
+  const n = loadQueue().length;
+  if (!n) setStatus('saved', 'All answers sent.', false);
+  else setStatus('pending', n + ' answer' + (n>1?'s':'') +
+                 ' saved on this device, not yet sent.', true);
+}
+async function sendNow(){
+  setStatus('sending', 'Sending…', false);
+  await flush();
+  const n = loadQueue().length;
+  if (n) setStatus('pending', n + ' answer' + (n>1?'s':'') +
+                   ' still waiting — check your connection.', true);
+  else setStatus('saved', 'All answers sent.', false);
+}
+
 let flushing = false;
 async function flush(){
   if (!(USE_SUPABASE || RESULTS_ENDPOINT) || flushing) return;
   const q = loadQueue();
   if (!q.length) return;
   flushing = true;
+  setStatus('sending', 'Sending…', false);
   try {
     let res;
     if (USE_SUPABASE) {
@@ -363,14 +406,29 @@ async function flush(){
         body: JSON.stringify({session:SESSION, task:'rooftype', rows:q})
       });
     }
-    if (res.ok) saveQueue([]);
-  } catch(e){ /* stay queued, retry on the next answer or visit */ }
+    if (res.ok) { saveQueue([]); }
+    else {
+      // A non-2xx is a real rejection, not a network blip -- surface it
+      // rather than retrying forever behind a reassuring message.
+      let detail = '';
+      try { detail = (await res.text()).slice(0, 140); } catch (e) {}
+      console.error('submit rejected', res.status, detail);
+      setStatus('pending', 'Server rejected the answers (HTTP ' + res.status +
+                '). They are saved here — please tell the researcher.', true);
+      flushing = false;
+      return;
+    }
+  } catch(e){
+    console.error('submit failed', e);
+  }
   finally { flushing = false; }
+  refreshStatus();
 }
 function record(img, choice){
   const q = loadQueue();
   q.push({img, choice, ts:Date.now()});
   saveQueue(q);
+  refreshStatus();
   flush();
 }
 window.addEventListener('pagehide', () => {
@@ -400,6 +458,8 @@ function go(){
   document.getElementById('done').hidden = true;
   document.getElementById('task').hidden = false;
   window.scrollTo(0,0);
+  refreshStatus();
+  flush();            // deliver anything stranded from a previous visit
   show();
 }
 function show(){

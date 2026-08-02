@@ -283,6 +283,36 @@ the rate at which the never-present distractors were picked.
 
 ---
 
+## 5. Viewing the results
+
+```bash
+export SUPABASE_URL="https://gctypkighhmblxbxdckv.supabase.co"
+export SUPABASE_SECRET="sb_secret_..."        # never write this into a file
+python study/dashboard.py
+
+# or, with no key at all, from a Table Editor CSV export:
+python study/dashboard.py --csv study/responses/responses.csv
+```
+
+Writes `study/dashboard.html` — open it in a browser. Shows the real-vs-
+generated headline with confidence intervals, a breakdown by model arm and
+by roof type, a confusion matrix of what people chose for each true roof
+type, and the hardest individual stimuli with the wrong answers people
+gave.
+
+**This dashboard is deliberately local and must never be deployed.** It
+renders every stimulus beside its true roof type, which makes it an answer
+key in another form — publishing it would let a participant look up the
+answers and void the study. That constraint is about the secret, not the
+host: it would apply equally on GitHub Pages, Vercel or anywhere else. It
+is gitignored for the same reason, as is the exported response data.
+
+The secret key is read from the environment rather than a config file so
+it cannot be committed by accident. It bypasses row-level security, so it
+is only ever used here, read-only, on your machine.
+
+---
+
 ## Reporting in the thesis
 
 Report **n participants**, **n trials**, and accuracy with CI for real

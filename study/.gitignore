@@ -1,5 +1,11 @@
 # The answer key and any backup of it must never be committed:
 # the study is blind, and publishing this would void every response.
 answer_key*
+
+# The dashboard renders each stimulus beside its TRUE roof type, so it is
+# an answer key in another form. Generated locally, never committed.
+dashboard.html
+
 responses/
 render*.log
+__pycache__/
