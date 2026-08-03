@@ -80,7 +80,18 @@
         background-repeat:no-repeat;background-size:400% 300%;
         cursor:grab;touch-action:pan-y;user-select:none}
   .spin:active{cursor:grabbing}
-  .spinhint{text-align:center;margin:-.5em 0 1.1em;font-size:.8rem}
+  /* Rotation controls. Some participants want to stop on a view and
+     study it; a fixed animation takes that away and makes the task
+     harder than the question intends. Both settings persist across all
+     128 trials, so they are chosen once, not per building. */
+  .spinhint{display:flex;align-items:center;justify-content:center;gap:.9em;
+            flex-wrap:wrap;margin:-.3em 0 1.1em;font-size:.8rem}
+  .spinbtn{font:inherit;font-size:.8rem;background:transparent;color:var(--accent);
+           border:1px solid var(--line);border-radius:7px;padding:.32em .8em;
+           cursor:pointer;min-width:5.9em}
+  .spinbtn:hover{border-color:var(--accent);background:var(--accent-soft)}
+  .speed{display:flex;align-items:center;gap:.45em;color:var(--muted)}
+  .speed input{width:104px;accent-color:var(--accent);cursor:pointer}
   .q{font-weight:600;margin:0 0 .7em}
 
   .opts{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
@@ -191,7 +202,15 @@
     <div id="spin" class="spin" role="img" aria-label="rotating 3D model of a building"></div>
     <img id="stim" alt="3D model of a building" hidden>
   </div>
-  <p class="note spinhint">Rotating &mdash; drag to turn it yourself.</p>
+  <div class="spinhint">
+    <button type="button" class="spinbtn" id="playBtn" onclick="togglePlay()"
+            aria-label="pause rotation">&#10073;&#10073; Pause</button>
+    <label class="speed">Speed
+      <input type="range" id="speed" min="0" max="5" step="1" value="2"
+             oninput="setSpeed(this.value)" aria-label="rotation speed">
+    </label>
+    <span class="note">or drag the building</span>
+  </div>
   <p class="q">Which roof type does this building have?</p>
   <div class="opts" id="opts"></div>
   <div class="row">
@@ -461,6 +480,7 @@ function start(){
   SESSION = newSession();
   try { localStorage.setItem('uav-session', SESSION); } catch(e){}
   i = 0; answers = {};
+  loadPrefs();          // the controls only exist once the task is shown
   go();
 }
 function go(){
@@ -505,8 +525,61 @@ function setSpin(img){
                          document.querySelector('.spinhint').hidden = false; };
   probe.src = `spin/${img}`;
   frame = 0; drawFrame();
+  restartSpin();
+}
+
+/* ---- rotation controls ----
+   Milliseconds per frame; twelve frames make a revolution, so index 2 is
+   the 2.2 s turn this shipped with. Kept as a fixed ladder rather than a
+   continuous range so every participant is on one of six known speeds --
+   a free-form value would be one more uncontrolled variable across
+   sessions, for no benefit to the person using it. */
+const SPEEDS = [420, 300, 180, 120, 80, 55];
+let paused = false, speedIdx = 2;
+
+function restartSpin(){
   clearInterval(spinTimer);
-  spinTimer = setInterval(() => { if (!dragging){ frame++; drawFrame(); } }, 180);
+  if (paused) return;
+  spinTimer = setInterval(() => { if (!dragging){ frame++; drawFrame(); } },
+                          SPEEDS[speedIdx]);
+}
+
+function togglePlay(){
+  paused = !paused;
+  const b = document.getElementById('playBtn');
+  b.innerHTML = paused ? '&#9654; Play' : '&#10073;&#10073; Pause';
+  b.setAttribute('aria-label', paused ? 'resume rotation' : 'pause rotation');
+  restartSpin();
+  savePrefs();
+}
+
+function setSpeed(v){
+  speedIdx = Math.min(SPEEDS.length - 1, Math.max(0, +v));
+  // Changing speed while paused should not silently start it moving
+  // again -- the participant stopped it deliberately.
+  restartSpin();
+  savePrefs();
+}
+
+// Chosen once, not per building: these persist across all 128 trials.
+function savePrefs(){
+  try { localStorage.setItem('uav-spin',
+        JSON.stringify({paused, speedIdx})); } catch(e){}
+}
+function loadPrefs(){
+  try {
+    const p = JSON.parse(localStorage.getItem('uav-spin') || 'null');
+    if (!p) return;
+    if (typeof p.speedIdx === 'number') speedIdx = p.speedIdx;
+    paused = !!p.paused;
+  } catch(e){}
+  const s = document.getElementById('speed');
+  if (s) s.value = speedIdx;
+  const b = document.getElementById('playBtn');
+  if (b){
+    b.innerHTML = paused ? '&#9654; Play' : '&#10073;&#10073; Pause';
+    b.setAttribute('aria-label', paused ? 'resume rotation' : 'pause rotation');
+  }
 }
 
 function drawFrame(){
