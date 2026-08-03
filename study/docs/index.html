@@ -16,6 +16,12 @@
            --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.35); }
   }
   *{box-sizing:border-box}
+  /* Must outrank the element rules below. `.stim img{display:block}` is
+     more specific than the UA's `[hidden]{display:none}`, so the fallback
+     still -- which has no src until the sprite sheet actually fails --
+     rendered as a broken-image placeholder AND, being a flex sibling,
+     took half the row from the rotating view. */
+  [hidden]{display:none !important}
   html{-webkit-text-size-adjust:100%}
   body{margin:0;background:var(--bg);color:var(--fg);
        font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
@@ -65,7 +71,16 @@
   .stim{background:var(--card);border:1px solid var(--line);border-radius:14px;
         padding:10px;display:flex;justify-content:center;margin-bottom:1.2em;
         box-shadow:var(--shadow)}
-  .stim img{width:100%;max-width:400px;height:auto;border-radius:9px;display:block}
+  .stim img{width:100%;max-width:620px;height:auto;border-radius:9px;display:block}
+  /* Rotation. One sprite sheet per building, animated by moving the
+     background: 12 frames arrive in a single request rather than 12, and
+     no animation library is needed. A fixed viewpoint can hide the very
+     thing being asked -- a monopitch seen end-on reads as flat. */
+  .spin{width:100%;max-width:620px;aspect-ratio:1/1;border-radius:9px;
+        background-repeat:no-repeat;background-size:400% 300%;
+        cursor:grab;touch-action:pan-y;user-select:none}
+  .spin:active{cursor:grabbing}
+  .spinhint{text-align:center;margin:-.5em 0 1.1em;font-size:.8rem}
   .q{font-weight:600;margin:0 0 .7em}
 
   .opts{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
@@ -76,7 +91,9 @@
        transition:border-color .12s,background .12s,transform .08s}
   .opt:hover{border-color:var(--accent);background:var(--accent-soft)}
   .opt:active{transform:scale(.98)}
-  .opt svg{display:block}
+  .opt img.ricon{display:block;width:88px;height:auto;margin:-6px 0 -4px}
+  .opt .qmark{display:block;font-size:1.9rem;font-weight:700;
+              color:var(--muted);line-height:1.5}
   .opt b{font-size:.86rem;font-weight:600;text-align:center;line-height:1.25}
   .opt small{font-size:.72rem;color:var(--muted);text-align:center;line-height:1.3}
   .opt.wide{grid-column:1/-1;flex-direction:row;justify-content:center;gap:.6em}
@@ -170,7 +187,11 @@
 <div id="task" hidden>
   <div class="bar"><i id="prog"></i></div>
   <div class="meta"><span id="counter"></span><span id="answered"></span></div>
-  <div class="stim"><img id="stim" alt="3D model of a building"></div>
+  <div class="stim">
+    <div id="spin" class="spin" role="img" aria-label="rotating 3D model of a building"></div>
+    <img id="stim" alt="3D model of a building" hidden>
+  </div>
+  <p class="note spinhint">Rotating &mdash; drag to turn it yourself.</p>
   <p class="q">Which roof type does this building have?</p>
   <div class="opts" id="opts"></div>
   <div class="row">
@@ -237,50 +258,36 @@ let SESSION = localStorage.getItem('uav-session') || newSession();
 try { localStorage.setItem('uav-session', SESSION); } catch(e){}
 
 // ---------------------------------------------------------------------
-// Every roof type in the model's vocabulary, not just the ones present in
-// the stimuli. Nine of these never occur, so they act as distractors:
-// choosing one is a false positive, and a model producing ambiguous roofs
-// will attract them. Offering only the three that appear would make the
-// task solvable by elimination.
+// The AdV "Dachform" codelist, which is the standard the source data is
+// coded against -- so the options are the vocabulary of the domain rather
+// than a list invented for this study.
 //
-// Each carries a profile diagram. Asking a non-architect to distinguish
-// "gambrel" from "mansard" by name alone is not a reasonable request; the
-// drawing is what makes the option meaningful.
+// Only three of them ever occur in the stimuli (flat, gabled,
+// monopitch). The other ten are distractors: choosing one is a false
+// positive, and a model producing ambiguous roofs will attract them.
+// Offering only the three that appear would make the task solvable by
+// elimination.
+//
+// Each carries a rendered example. Asking a non-architect to distinguish
+// "jerkinhead" from "mansard" by name alone is not a reasonable request;
+// the drawing is what makes the option meaningful.
 // ---------------------------------------------------------------------
-const P = 'fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"';
-function svg(inner){
-  return '<svg width="46" height="32" viewBox="0 0 46 32" aria-hidden="true">'
-       + '<g ' + P + '>' + inner + '</g></svg>';
-}
-const BODY = '<path d="M8 30 V20 H38 V30"/>';          // walls, shared
-
 const OPTIONS = [
-  {v:'flat',        n:'Flat',        h:'no visible slope',
-   s:'<path d="M6 20 H40"/>'},
-  {v:'gabled',      n:'Gabled',      h:'two slopes to a ridge',
-   s:'<path d="M6 20 L23 8 L40 20"/>'},
-  {v:'hipped',      n:'Hipped',      h:'slopes on all four sides',
-   s:'<path d="M6 20 L15 9 H31 L40 20"/>'},
-  {v:'half_hipped', n:'Half-hipped', h:'gable with clipped top',
-   s:'<path d="M6 20 L18 8 H28 L40 20"/><path d="M18 8 L20 5 H26 L28 8"/>'},
-  {v:'monopitch',   n:'Monopitch',   h:'one single slope',
-   s:'<path d="M6 20 L40 8"/>'},
-  {v:'shed',        n:'Shed',        h:'single slope, lean-to',
-   s:'<path d="M6 8 L40 18"/>'},
-  {v:'mansard',     n:'Mansard',     h:'steep then shallow',
-   s:'<path d="M6 20 L12 11 L23 6 L34 11 L40 20"/>'},
-  {v:'gambrel',     n:'Gambrel',     h:'barn-style double slope',
-   s:'<path d="M6 20 L13 13 L23 7 L33 13 L40 20"/>'},
-  {v:'pyramid',     n:'Pyramid',     h:'four slopes to a point',
-   s:'<path d="M6 20 L23 6 L40 20"/><path d="M23 6 L23 20"/>'},
-  {v:'tented',      n:'Tented',      h:'tall, steep point',
-   s:'<path d="M9 20 L23 3 L37 20"/><path d="M23 3 L23 20"/>'},
-  {v:'curved',      n:'Curved',      h:'arched or barrel',
-   s:'<path d="M6 20 Q23 2 40 20"/>'},
-  {v:'butterfly',   n:'Butterfly',   h:'V-shape, slopes inward',
-   s:'<path d="M6 8 L23 18 L40 8"/>'},
-  {v:'none',        n:'None of the above / can’t tell', h:'',
-   s:'<path d="M23 7 v10"/><circle cx="23" cy="23" r="1.4" fill="currentColor"/>'}
+  {v:'flat',        n:'Flat',        h:'no visible slope'},
+  {v:'monopitch',   n:'Monopitch',   h:'one single slope'},
+  {v:'gabled',      n:'Gabled',      h:'two slopes to a ridge'},
+  {v:'hipped',      n:'Hipped',      h:'slopes on all four sides'},
+  {v:'half_hipped', n:'Jerkinhead',  h:'gable with clipped top'},
+  {v:'mansard',     n:'Mansard',     h:'steep then shallow'},
+  {v:'tented',      n:'Tent',        h:'four slopes to a point'},
+  {v:'tower',       n:'Tower',       h:'tall, narrow spire'},
+  {v:'conical',     n:'Conical',     h:'a smooth cone'},
+  {v:'domed',       n:'Domed',       h:'a rounded dome'},
+  {v:'curved',      n:'Arched',      h:'barrel-vaulted'},
+  {v:'sawtooth',    n:'Sawtooth',    h:'repeated stepped slopes'},
+  {v:'staggered_monopitch', n:'Staggered monopitch',
+                                     h:'two offset single slopes'},
+  {v:'none',        n:'None of the above / can’t tell', h:''}
 ];
 
 let stim = [], i = 0, answers = {};
@@ -305,7 +312,15 @@ function buildOptions(){
   OPTIONS.forEach(o => {
     const b = document.createElement('button');
     b.className = 'opt' + (o.v === 'none' ? ' wide' : '');
-    b.innerHTML = svg(o.s) + '<b>' + o.n + '</b>'
+    // The options are voxel buildings in the same colours and projection
+    // as the stimuli, so a participant matches like to like rather than
+    // translating a line diagram. Hand-drawn SVG was tried first and
+    // failed: at icon size, gabled/hipped/mansard/jerkinhead all
+    // collapsed into the same small blob. Normalised by
+    // study/prepare_icons.py -- one canvas, one scale, transparent.
+    b.innerHTML = (o.v === 'none' ? '<span class="qmark">?</span>'
+                                  : `<img class="ricon" src="roof/${o.v}.png" alt="">`)
+                + '<b>' + o.n + '</b>'
                 + (o.h ? '<small>' + o.h + '</small>' : '');
     b.onclick = () => choose(o.v);
     box.appendChild(b);
@@ -460,12 +475,72 @@ function go(){
 function show(){
   while (i < stim.length && answers[stim[i].img] !== undefined) i++;
   if (i >= stim.length){ finish(true); return; }
-  document.getElementById('stim').src = 'img/' + stim[i].img;
+  setSpin(stim[i].img);
+  preload(i + 1);
   document.getElementById('counter').textContent = `Building ${i+1} of ${stim.length}`;
   const n = Object.keys(answers).length;
   document.getElementById('answered').textContent = `${n} answered`;
   document.getElementById('prog').style.width = (100*n/stim.length) + '%';
 }
+// ---- rotation ---------------------------------------------------------
+let SPIN = {angles:12, cols:4, px:260};
+let frame = 0, spinTimer = null, dragging = false, dragX = 0, dragFrame = 0;
+
+fetch('spin_meta.json').then(r => r.json()).then(m => { SPIN = m; })
+  .catch(() => {});   // falls back to the defaults above
+
+function setSpin(img){
+  const el = document.getElementById('spin');
+  const still = document.getElementById('stim');
+  el.style.backgroundImage = `url("spin/${img}")`;
+  const rows = Math.ceil(SPIN.angles / SPIN.cols);
+  el.style.backgroundSize = `${SPIN.cols * 100}% ${rows * 100}%`;
+  // If the sheet is missing for any reason, fall back to the still image
+  // rather than showing an empty box.
+  const probe = new Image();
+  probe.onerror = () => { el.hidden = true; still.hidden = false;
+                          still.src = 'img/' + img;
+                          document.querySelector('.spinhint').hidden = true; };
+  probe.onload = () => { el.hidden = false; still.hidden = true;
+                         document.querySelector('.spinhint').hidden = false; };
+  probe.src = `spin/${img}`;
+  frame = 0; drawFrame();
+  clearInterval(spinTimer);
+  spinTimer = setInterval(() => { if (!dragging){ frame++; drawFrame(); } }, 180);
+}
+
+function drawFrame(){
+  const el = document.getElementById('spin');
+  const rows = Math.ceil(SPIN.angles / SPIN.cols);
+  const f = ((frame % SPIN.angles) + SPIN.angles) % SPIN.angles;
+  const cx = f % SPIN.cols, cy = Math.floor(f / SPIN.cols);
+  el.style.backgroundPosition =
+    `${(cx * 100) / (SPIN.cols - 1)}% ${(cy * 100) / (rows - 1)}%`;
+}
+
+function preload(n){
+  for (let k = n; k < Math.min(n + 2, stim.length); k++)
+    new Image().src = 'spin/' + stim[k].img;
+}
+
+(function dragToSpin(){
+  const el = () => document.getElementById('spin');
+  const down = e => { dragging = true; dragX = (e.touches?e.touches[0]:e).clientX;
+                      dragFrame = frame; };
+  const move = e => {
+    if (!dragging) return;
+    const x = (e.touches ? e.touches[0] : e).clientX;
+    frame = dragFrame + Math.round((x - dragX) / 18);
+    drawFrame();
+    if (e.cancelable) e.preventDefault();
+  };
+  const up = () => { dragging = false; };
+  document.addEventListener('pointerdown', e => { if (e.target === el()) down(e); });
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+  document.addEventListener('pointercancel', up);
+})();
+
 function choose(v){ answers[stim[i].img] = v; record(stim[i].img, v); i++; save(); show(); }
 function skip(){ record(stim[i].img, '(skipped)'); i++; save(); show(); }
 

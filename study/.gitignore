@@ -7,5 +7,5 @@ answer_key*
 dashboard.html
 
 responses/
-render*.log
+*.log
 __pycache__/
