@@ -1,0 +1,80 @@
+# Phase B v6 -- v5 plus differentiable topology terms.
+#
+# ONE variable changes from v5: two topology terms are added to the
+# cross-entropy. Data, architecture, optimiser, schedule, iteration
+# count and seed are all v5's.
+#
+# Why two terms rather than one. The remaining defects are different:
+#   Pillar E  84.0 % single-component (real 99.4 %)  -- connectivity
+#   Pillar F  40.3 % watertight       (real 92.1 %)  -- closure
+# A shell missing a single voxel is still connected (b0 = 1) but no
+# longer watertight (b2 = 0), so a connectivity loss cannot see the
+# larger defect and a closure loss does not address fragmentation.
+#
+#   topo_w_cldice  soft-clDice (Shit et al., CVPR 2021) on the occupied
+#                  region. Targets connectivity.
+#   topo_w_leak    soft flood-fill leakage: flood the grid exterior,
+#                  blocked by the predicted SHELL only, and penalise
+#                  whatever reaches voxels labelled `interior`. Targets
+#                  closure, and is the differentiable surrogate for the
+#                  test Pillar F performs exactly. Validated on real
+#                  data: correlation with the watertight flag -1.000,
+#                  mean leak 0.000 for watertight buildings.
+#
+# Weights were calibrated, not guessed. Measured at iteration 4 against
+# the v5 baseline of loss 1.9453 / grad-norm 7.2:
+#   cldice 0.1     -> grad-norm 2079   (300x baseline: would swamp the CE)
+#   cldice 0.001   -> grad-norm 10.3
+#   cldice 0.0005  -> chosen
+#   leak 1.0       -> loss 2.231, grad-norm 6.66  (chosen)
+#   leak 10        -> loss 4.802: topology becomes 60% of the objective
+# If watertightness does not move, raise topo_w_leak first -- but check
+# occupancy at the same time. Guidance also "improved" watertightness,
+# by inflating the building until it happened to seal (claude.md 44.4),
+# and a closure term can buy the metric the same dishonest way.
+#
+# Run:
+#   ./model/.venv/bin/python -m model.src.train --config model/configs/phase_b_v6.yaml
+
+shards_dir: tensorbuilding/shards_v5
+manifest_path: tensorbuilding/shards_v5/manifest.csv
+subset: 0
+
+batch_size: 8
+num_workers: 2
+
+# --- architecture: IDENTICAL to v5 -----------------------------------
+base_channels: 32
+channel_mults: [1, 2, 4, 4]
+cond_dim: 256
+time_embed_dim: 256
+blocks_per_level: 2
+
+# --- diffusion + optimiser: IDENTICAL to v5 --------------------------
+n_timesteps: 1000
+lr: 0.0001
+warmup_iters: 1000
+weight_decay: 0.0005
+ema_decay: 0.999
+p_drop_cond: 0.1
+grad_clip: 0.5
+amp: true
+parameterization: x0
+fg_loss_weight: 0.0
+
+# --- v6: the one change ----------------------------------------------
+topo_w_cldice: 0.0005
+topo_w_leak: 1.0
+topo_skel_iters: 3
+topo_flood_steps: 32
+
+iters: 100000
+log_every: 100
+save_every: 2000
+sample_every: 2500
+sample_seeds: [42, 43, 44, 45]
+sample_n_steps: 50
+sample_guidance: 0.0        # see claude.md §44
+
+out_dir: model/checkpoints/phase_b_v6
+seed: 42

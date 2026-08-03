@@ -84,6 +84,7 @@ class DiffusionSchedule:
         drop_mask: torch.Tensor | None,
         fg_weight: float = 0.0,
         parameterization: str = "eps",
+        topo: dict | None = None,
     ) -> torch.Tensor:
         """DDPM training loss.
 
@@ -113,7 +114,19 @@ class DiffusionSchedule:
             # Model output is (B, C, D, D, D) logits.  Cross-entropy expects
             # target as class-index tensor (B, D, D, D).
             target = x0.argmax(dim=1)                       # (B, D, D, D)
-            return F.cross_entropy(model_out, target)
+            loss = F.cross_entropy(model_out, target)
+
+            # v6: optional topology terms. Cross-entropy is per-voxel and
+            # cannot express connectivity or closure -- established by v5,
+            # where a dense interior target improved watertightness 2.4x
+            # and then stopped. These act on the predicted field as a
+            # whole. Off by default, so v4/v5 behaviour is unchanged.
+            if topo:
+                from .topo_loss import topology_loss
+                extra, parts = topology_loss(model_out, x0, **topo)
+                loss = loss + extra
+                self.last_topo_parts = parts
+            return loss
 
         # -- eps parameterization (default) ----------------------------------
         eps_pred = model_out

@@ -156,6 +156,13 @@ def main() -> None:
     fg_loss_weight = float(cfg.get("fg_loss_weight", 0.0))
     # Parameterization: "eps" (default, DDPM MSE) or "x0" (Improved-DDPM, CE loss).
     parameterization = str(cfg.get("parameterization", "eps"))
+    # v6 topology terms; absent or zero -> identical to v4/v5
+    topo_cfg = {k: cfg[c] for k, c in
+                (("w_cldice", "topo_w_cldice"), ("w_leak", "topo_w_leak"),
+                 ("skel_iters", "topo_skel_iters"),
+                 ("flood_steps", "topo_flood_steps")) if c in cfg}
+    if not any(topo_cfg.get(k, 0) for k in ("w_cldice", "w_leak")):
+        topo_cfg = None
     if parameterization not in ("eps", "x0"):
         raise ValueError(f"unknown parameterization: {parameterization!r}")
     print(f"[train] parameterization: {parameterization}"
@@ -321,6 +328,7 @@ def main() -> None:
                 return unet(x_t, t_, cond_vec)
 
             loss = schedule.p_loss(model_call, x0, t, drop_mask=drop,
+                                   topo=topo_cfg,
                                    fg_weight=fg_loss_weight,
                                    parameterization=parameterization)
 
