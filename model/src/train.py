@@ -90,12 +90,24 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[train] device={device} torch={torch.__version__}")
 
+    # v8: enforce closure only where the REAL shell was watertight. This is
+    # read before the dataset is built because it changes the TARGET as well
+    # as the loss -- see Building3DDataset(closure_gate=...) and claude.md §69.2.
+    closure_gate = bool(cfg.get("closure_gate", False))
+
     # -- Dataset --------------------------------------------------------
     ds = Building3DDataset(
         shards_dir=cfg["shards_dir"],
         manifest_path=cfg.get("manifest_path"),
+        closure_gate=closure_gate,
     )
     print(f"[train] dataset: {len(ds):,} samples, tensor_shape={ds.tensor_shape}")
+    if closure_gate:
+        n_on = sum(1 for r in ds.records
+                   if str(r["row"].get("interior_status", "")).strip() == "filled")
+        print(f"[train] closure gate: ON — enforcing on {n_on:,}/{len(ds):,} "
+              f"({100*n_on/len(ds):.1f}%) whose raw shell is watertight; "
+              f"interior dissolved on the rest")
     print(f"[train] vocab_sizes: {ds.vocab_sizes}")
     if (n_sub := int(cfg.get("subset", 0))) > 0 and n_sub < len(ds):
         ds = Subset(ds, list(range(n_sub)))
@@ -327,8 +339,12 @@ def main() -> None:
                 # `drop_` already baked into cond_vec; UNet only needs (x, t, c).
                 return unet(x_t, t_, cond_vec)
 
+            cmask = batch.get("enforce_closure")
             loss = schedule.p_loss(model_call, x0, t, drop_mask=drop,
                                    topo=topo_cfg,
+                                   closure_mask=(cmask.to(device)
+                                                 if closure_gate and cmask is not None
+                                                 else None),
                                    fg_weight=fg_loss_weight,
                                    parameterization=parameterization)
 

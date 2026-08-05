@@ -82,7 +82,8 @@ def soft_cldice(pred: torch.Tensor, true: torch.Tensor,
 
 
 def leak_loss(p_shell: torch.Tensor, p_interior: torch.Tensor,
-              steps: int = 40) -> torch.Tensor:
+              steps: int = 40,
+              mask: torch.Tensor | None = None) -> torch.Tensor:
     """Closure term: how much exterior reaches the claimed interior.
 
     Floods inward from the grid boundary and reports the flood's overlap
@@ -120,13 +121,29 @@ def leak_loss(p_shell: torch.Tensor, p_interior: torch.Tensor,
 
     # exterior that has reached voxels the model calls interior
     leaked = flood * p_interior
-    return (leaked.sum(dim=(1, 2, 3, 4))
-            / (p_interior.sum(dim=(1, 2, 3, 4)) + EPS)).mean()
+    per_sample = (leaked.sum(dim=(1, 2, 3, 4))
+                  / (p_interior.sum(dim=(1, 2, 3, 4)) + EPS))
+
+    # v8: closure is enforced only on buildings whose REAL shell was already
+    # watertight. Averaging over the masked-in samples only -- not over the
+    # batch -- keeps the term's scale independent of how many buildings the
+    # gate happens to admit in a given batch, so the calibrated weight still
+    # means what it meant in v6/v7.
+    if mask is None:
+        return per_sample.mean()
+    m = mask.to(per_sample.dtype)
+    n = m.sum()
+    if n < 1:
+        # No gated-in sample in this batch. Return a real zero that still
+        # carries the graph, so AMP and DDP see a consistent set of grads.
+        return per_sample.sum() * 0.0
+    return (per_sample * m).sum() / n
 
 
 def topology_loss(logits: torch.Tensor, x0: torch.Tensor,
                   w_cldice: float = 0.0, w_leak: float = 0.0,
-                  skel_iters: int = 5, flood_steps: int = 40
+                  skel_iters: int = 5, flood_steps: int = 40,
+                  closure_mask: torch.Tensor | None = None
                   ) -> tuple[torch.Tensor, dict]:
     """Combined term added to the cross-entropy. Returns (loss, parts).
 
@@ -154,8 +171,12 @@ def topology_loss(logits: torch.Tensor, x0: torch.Tensor,
         parts["cldice"] = float(l.detach())
 
     if w_leak > 0 and logits.shape[1] > 6:
-        l = leak_loss(p_shell, p[:, 6:7], flood_steps)
+        # clDice is NOT gated: connectivity is expected of every building,
+        # open or closed. Only closure is conditional on the target.
+        l = leak_loss(p_shell, p[:, 6:7], flood_steps, mask=closure_mask)
         total = total + w_leak * l
         parts["leak"] = float(l.detach())
+        if closure_mask is not None:
+            parts["leak_n"] = float(closure_mask.sum())
 
     return total, parts

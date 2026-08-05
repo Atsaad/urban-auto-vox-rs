@@ -85,6 +85,7 @@ class DiffusionSchedule:
         fg_weight: float = 0.0,
         parameterization: str = "eps",
         topo: dict | None = None,
+        closure_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """DDPM training loss.
 
@@ -123,7 +124,8 @@ class DiffusionSchedule:
             # whole. Off by default, so v4/v5 behaviour is unchanged.
             if topo:
                 from .topo_loss import topology_loss
-                extra, parts = topology_loss(model_out, x0, **topo)
+                extra, parts = topology_loss(model_out, x0,
+                                             closure_mask=closure_mask, **topo)
                 loss = loss + extra
                 self.last_topo_parts = parts
             return loss

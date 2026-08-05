@@ -40,6 +40,10 @@ import torch
 from torch.utils.data import Dataset
 
 # ---- categorical & continuous feature list ------------------------------
+# Index of the v5+ `interior` channel. Channels 0..5 are the shell
+# classes (0 = empty); a 7-channel tensor adds `interior` at index 6.
+N_SHELL_CHANNELS = 6
+
 # These names must exist in the manifest CSV (and as attrs on HDF5 groups).
 # Order is stable — used by ConditionEncoder.
 CATEGORICAL_COLS = [
@@ -113,9 +117,24 @@ class Building3DDataset(Dataset):
         tag_glob: str = "*",
         manifest_path: Optional[str] = None,
         filter_fn: Optional[Callable[[dict], bool]] = None,
+        closure_gate: bool = False,
     ):
         super().__init__()
         self.shards_dir = shards_dir
+        # v8. The `interior` channel was populated by flood-filling each real
+        # building, applying a one-voxel morphological closing where the raw
+        # shell would not close. That gave an interior to 98.9 % of targets
+        # while only ~95.9 % of the raw shells are watertight under the strict
+        # 6-connected test the evaluation uses. Because v6's leak term seals
+        # the shell around whatever interior is present, the model reproduces
+        # the REPAIRED rate rather than the real one (claude.md §69.2).
+        #
+        # With the gate on, a building keeps its interior -- and is asked to
+        # close around it -- only if its raw shell was already watertight,
+        # i.e. `interior_status == "filled"`. For the rest the interior is
+        # dissolved back to empty, so the target is the unrepaired shell and
+        # the closure term has nothing there to enforce.
+        self.closure_gate = bool(closure_gate)
 
         # 1. Manifest: source of conditions + the (gmlid -> shard) routing.
         if manifest_path is None:
@@ -184,6 +203,21 @@ class Building3DDataset(Dataset):
         # Tensor: stored uint8 one-hot, model wants float32.
         tensor = torch.from_numpy(grp["tensor"][...]).to(torch.float32)
 
+        # v8 gate. `enforce` is False for buildings whose raw shell was not
+        # watertight and whose interior therefore exists only because of the
+        # morphological repair.
+        enforce = True
+        if self.closure_gate:
+            enforce = (str(rec["row"].get("interior_status", "")).strip()
+                       == "filled")
+            if not enforce and tensor.shape[0] > N_SHELL_CHANNELS:
+                # Dissolve the repaired interior back to empty. Channel 0 is
+                # `empty`, so the voxel stays one-hot and the target becomes
+                # the shell exactly as the source data has it.
+                interior = tensor[N_SHELL_CHANNELS] > 0
+                tensor[N_SHELL_CHANNELS][interior] = 0.0
+                tensor[0][interior] = 1.0
+
         # Categorical IDs (empty -> NULL_TOK -> id 0).
         cat: dict[str, int] = {}
         for c in CATEGORICAL_COLS:
@@ -215,6 +249,7 @@ class Building3DDataset(Dataset):
             "cont": torch.from_numpy(cont),
             "cat": cat,
             "gmlid": rec["gmlid"],
+            "enforce_closure": enforce,
         }
 
 
@@ -225,6 +260,9 @@ def collate_batch(samples: list[dict]) -> dict:
         "tensor": torch.stack([s["tensor"] for s in samples], dim=0),
         "cont":   torch.stack([s["cont"]   for s in samples], dim=0),
         "gmlid":  [s["gmlid"] for s in samples],
+        # (B,) bool — v8 closure gate; all True unless the gate is enabled.
+        "enforce_closure": torch.tensor(
+            [s.get("enforce_closure", True) for s in samples], dtype=torch.bool),
     }
     # Categoricals: one (B,) long tensor per feature, in fixed CATEGORICAL_COLS order.
     for c in CATEGORICAL_COLS:
