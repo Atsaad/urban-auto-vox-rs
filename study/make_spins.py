@@ -106,7 +106,12 @@ def main() -> None:
 
     key = json.loads(KEY.read_text())
     # every stimulus, resolved back to the array it was rendered from
-    src = {"v4_w0": "model/checkpoints/phase_b_v4/eval_w0/eval_samples.npz",
+    # Arm label (as written into the answer key) -> the npz it came from.
+    # v7 is the configuration the thesis prefers; the study was rebuilt on
+    # it so the human evaluation speaks to the model actually defended,
+    # not to superseded ones (claude.md §77).
+    src = {"v7":    "model/checkpoints/phase_b_v7/eval/eval_samples.npz",
+           "v4_w0": "model/checkpoints/phase_b_v4/eval_w0/eval_samples.npz",
            "v5":    "model/checkpoints/phase_b_v5/eval/eval_samples.npz"}
     cache = {k: np.load(v, allow_pickle=True) for k, v in src.items()
              if Path(v).exists()}
