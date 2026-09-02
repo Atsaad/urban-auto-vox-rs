@@ -561,12 +561,12 @@ class ModernVoxelGUI(ctk.CTk):
         ctk.CTkCheckBox(range_row, text="All", variable=self.chunk_process_all,
                         command=self._toggle_chunk_max).pack(side="left", padx=(0, 12))
 
-        # Presets row — the §12 five-city training set (claude.md §11 table)
+        # Presets row — the five-city training set (project log, chunk table)
         ctk.CTkLabel(content, text="Presets:", font=ctk.CTkFont(weight="bold")).grid(
             row=5, column=0, sticky="w", padx=3, pady=3)
         preset_row = ctk.CTkFrame(content, fg_color="transparent")
         preset_row.grid(row=5, column=1, sticky="ew", padx=3, pady=3)
-        # (start_chunk, n_chunks, label) — matches claude.md §11 unified table
+        # (start_chunk, n_chunks, label) — matches the unified chunk table
         for start, n, label in [
             (17,   62, "München"),
             (1715, 18, "Augsburg"),

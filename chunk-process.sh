@@ -30,7 +30,8 @@
 #                                            never bleeds into the next district)
 #   ./chunk-process.sh --start 17 --max 5    process up to 5 NEW chunks from 00017
 #                                            (count-based cap; prefer --end for city
-#                                            ranges — see the kreis table in claude.md)
+#                                            ranges — see the kreis-to-chunk table
+#                                            in the project log)
 #   ./chunk-process.sh --munich-only         shortcut for --start 17 --end 78
 #   ./chunk-process.sh --dry-run             list what would be processed
 #   ./chunk-process.sh --summary             show progress

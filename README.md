@@ -425,8 +425,9 @@ Two tables, decoupled by design:
 * **`building`** — created by the pipeline but **not written to it**. Loaded
   once, out-of-band, from `building_metadata.csv` via `psql \COPY`.
   Holds the building-level conditioning attributes (function, roof type,
-  height, storeys, address, etc.) used to build the diffusion model's
-  conditioning vectors at training time.
+  height, storeys, address, etc.) that downstream consumers join against
+  the voxel output — for example to build conditioning vectors for a
+  generative model.
 * **`voxel`** — the only table the pipeline writes. Flat and denormalised:
   one row per occupied voxel with `(voxel_position, building_gmlid,
   surface_gmlid, surface_class, x, y, z, vox_geom)`. `voxel_position` is

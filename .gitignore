@@ -61,8 +61,37 @@ model/checkpoints/
 model/**/__pycache__/
 model/.venv/
 
-# Claude Code local state (private working directory)
+# Editor and agent local state (private working directory)
 .claude/
 
-# One-off scratchpad scripts (never commit these — put finished tools in model/src or tensorbuilding/)
+# One-off scratchpad scripts (never commit these — put finished tools in scripts/)
 scratchpad_*.py
+new *.txt
+
+# Web voxeliser job directories (per-job outputs, regenerable)
+runs/webjobs/
+
+# Compressed archives of pipeline output (hundreds of GB; delivered out of band)
+*.zip
+*.tar
+*.tar.gz
+*.tar.zst
+
+# Local demonstration tools. These drive the pipeline from a browser for
+# in-person demos and are not part of the distributed tool. The Cesium ion
+# access token under landmarks_pipeline/ is a credential and must never be
+# committed.
+scripts/
+webportal/
+landmarks/
+landmarks_pipeline/
+voxelise-app.sh
+generate-app.sh
+
+# This repository is the voxelisation pipeline only. The generative model, the
+# tensor-building step and the figures produced from training runs share a
+# working tree here but are not tracked on this branch.
+model/
+tensorbuilding/
+figures/
+study/
