@@ -78,24 +78,10 @@ tensorbuilding/
 figures/
 study/
 
-# Post-thesis experiments: keep the code, configs, findings and run logs;
-# the artefacts are 58 GB of checkpoints, tensors and per-batch CSVs and are
-# reproducible from the scripts beside them.
-postthesis/.venv/
-postthesis/*/bin/
-postthesis/**/*.pt
-postthesis/**/*.h5
-postthesis/**/*.las
-postthesis/**/*.npz
-postthesis/**/*.so
-postthesis/**/out/
-postthesis/**/out_*/
-postthesis/**/work/
-postthesis/**/work_*/
-postthesis/results/**/cityjson/
-postthesis/results/**/val3dity_reports/
-postthesis/results/**/gml/
-postthesis/results/x3_citygml/files/
-
-# Superseded by the overleaf-paper clone and journal work/_snapshots/.
-journal work/paper.zip
+# This repository is the voxelisation pipeline only. The paper's own materials
+# and the generative model's experiments are kept outside it; the model gets a
+# repository of its own. The postthesis/r0_resolution scripts already tracked
+# here are voxelisation throughput work and stay.
+journal work/
+analysis/
+postthesis/
