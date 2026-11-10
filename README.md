@@ -23,13 +23,14 @@ CityGML  ──→  OBJ + JSON  ──→  CUDA voxelization  ──→  CSV / P
 5. [Configuration](#configuration)
 6. [GUI](#gui)
 7. [Batch processing](#batch-processing)
-8. [CLI reference](#cli-reference)
-9. [Data flow and outputs](#data-flow-and-outputs)
-10. [Database schema](#database-schema)
-11. [Performance](#performance)
-12. [Testing](#testing)
-13. [Troubleshooting](#troubleshooting)
-14. [License](#license)
+8. [Chunk processing (urban scale)](#chunk-processing-urban-scale)
+9. [CLI reference](#cli-reference)
+10. [Data flow and outputs](#data-flow-and-outputs)
+11. [Database schema](#database-schema)
+12. [Performance](#performance)
+13. [Testing](#testing)
+14. [Troubleshooting](#troubleshooting)
+15. [License](#license)
 
 ---
 
@@ -131,6 +132,8 @@ urban-auto-vox-rs/
 ├── .env.example                   # All configuration knobs, documented
 ├── start.sh                       # End-to-end orchestration (single tile)
 ├── batch-process.sh               # End-to-end orchestration (batch of tiles)
+├── chunk_buildings.py             # Chunk stage 1: build per-chunk manifests
+├── chunk-process.sh               # Chunk stage 2: run the pipeline per chunk
 ├── setup-gpu.sh                   # NVIDIA + Docker prerequisites check
 ├── clean-all.sh                   # Full cleanup of generated data
 ├── gui_modern.py                  # Desktop GUI (CustomTkinter)
@@ -140,6 +143,9 @@ urban-auto-vox-rs/
 │   ├── citygml2/                  # Input: CityGML 2.0 files
 │   ├── citygml3/                  # Intermediate: upgraded CityGML 3.0
 │   └── objs/                      # Output: OBJ, sidecars, CSV, binvox
+│
+├── postthesis/
+│   └── r0_resolution/             # Throughput measurement across voxel sizes
 │
 ├── docker/
 │   ├── Dockerfile.voxel-pipeline-rs
@@ -155,6 +161,10 @@ urban-auto-vox-rs/
 ├── Cargo.toml                     # Workspace manifest
 └── rust-toolchain.toml            # Pinned to Rust 1.85
 ```
+
+Generated at run time and git-ignored: `chunks/` (chunk manifests),
+`voxel_csvs/` (per-chunk concatenated voxel CSVs), `output_batches/` and
+`batch_logs/` (per-tile and per-chunk archives and logs).
 
 ---
 
@@ -328,6 +338,127 @@ tile_<name>/
 When using `postgis` or `both` output format, voxels from all tiles are
 appended to the same `voxel` table — queryable as a single dataset after
 the batch completes.
+
+---
+
+## Chunk processing (urban scale)
+
+Batch processing is organized by **tile**, which is how CityGML is
+distributed. Chunk processing is organized by **building**, which is what
+you need when the input is millions of individual `.gml` files that no
+longer correspond to tiles — a whole federal state, split per building and
+sorted by municipality. It is the path used for the 10M-building runs.
+
+Two stages, with the manifest as the durable artefact between them.
+
+### Stage 1 — build the manifests
+
+[`chunk_buildings.py`](chunk_buildings.py) groups split building files into
+fixed-size chunks sorted by `gemeindeschluessel` (the German municipality
+key), so a chunk never straddles two municipalities more than necessary and
+a city occupies a contiguous chunk range.
+
+```bash
+python3 chunk_buildings.py            # default 5000 buildings per chunk
+python3 chunk_buildings.py 2000       # or pick the chunk size
+```
+
+It writes `chunks/manifests/<chunk_id>.csv` per chunk plus a master index at
+`chunks/chunks_index.csv`.
+**No `.gml` file is moved, copied or symlinked** — the manifests only record
+which buildings belong to which chunk and where each file lives. That makes
+re-chunking cheap and non-destructive.
+
+> **Note:** the source and metadata paths in `chunk_buildings.py` are
+> currently hardcoded at the top of the file (`SOURCE`, `META`), and `META`
+> points inside a directory that is not part of this repository. Edit those
+> two constants before the first run. They are not yet CLI flags.
+
+### Stage 2 — run the pipeline per chunk
+
+[`chunk-process.sh`](chunk-process.sh) iterates the manifests, stages each
+chunk's `.gml` files into `data/input/`, runs the full Docker pipeline once
+per chunk, and archives the result.
+
+#### Features
+
+- **Granular resume** — a chunk is skipped if `output_batches/<chunk_id>.zip`
+  exists, so an interrupted run of hundreds of chunks continues where it left off
+- **Bounded ranges** — `--end` stops the run at a chunk boundary, so a city
+  range never bleeds into the next district
+- **Hot database** — PostGIS is brought up once and stays up across chunks
+- **Parallel staging** — `.gml` files are copied with 8 concurrent processes
+  by default, since staging rather than voxelizing dominates small chunks
+- **Skip-and-continue** — a failing chunk is appended to `chunk_failed.txt`
+  and the run carries on
+- **Derived sidecar** — a per-chunk `grid_sizes.csv` is computed from the
+  voxel CSV, recording the grid each building was voxelized into
+- **Progress without side effects** — `--summary` and `--dry-run` report
+  without running anything
+
+#### Configuration
+
+| Variable                 | Default            | Purpose |
+|--------------------------|--------------------|---------|
+| `CHUNK_MANIFESTS_DIR`    | `chunks/manifests` | Where stage 1 wrote the manifests |
+| `CHUNK_VOXEL_CSV_DIR`    | `voxel_csvs`       | Concatenated per-chunk voxel CSVs, kept uncompressed for tensor-building |
+| `BATCH_OUTPUT_DIR`       | `output_batches`   | One zip archive per completed chunk |
+| `CHUNK_PARALLEL_COPIES`  | `8`                | Concurrent `cp` processes when staging a chunk |
+| `PIPELINE_OUTPUT_FORMAT` | `csv`              | `csv` is recommended at this scale; `postgis` and `both` also work |
+
+All `PIPELINE_*` and `POSTGRES_*` variables are honoured per chunk, and
+`.env` is sourced automatically.
+
+#### Usage
+
+```bash
+./chunk-process.sh                      # run all remaining chunks
+./chunk-process.sh --start 17           # start from chunk_00017
+./chunk-process.sh --start 17 --end 78  # inclusive range; stops at --end
+./chunk-process.sh --start 17 --max 5   # up to 5 NEW chunks (count-based cap)
+./chunk-process.sh --munich-only        # shortcut for --start 17 --end 78
+./chunk-process.sh --dry-run            # list what would be processed
+./chunk-process.sh --summary            # progress: done, failed, remaining
+./chunk-process.sh --help
+```
+
+Prefer `--end` over `--max` for city ranges: `--max` counts only *new*
+chunks, so its stopping point shifts as chunks complete, whereas `--end` is
+an absolute boundary. Already-finished chunks inside a range are counted,
+not redone.
+
+#### Output per chunk
+
+```
+voxel_csvs/
+  ├── chunk_00017_voxels.csv       # concatenated voxels, uncompressed
+  └── chunk_00017_grid_sizes.csv   # per-building grid size, derived
+output_batches/
+  └── chunk_00017.zip              # per-building CSVs + semantic JSONs
+                                   #   + the two sidecars above
+chunk_processing.log               # append-only, timestamped
+chunk_failed.txt                   # chunk ids that failed this run
+```
+
+`chunks/`, `voxel_csvs/` and `output_batches/` are all git-ignored: the
+manifests are regenerable from stage 1, and the voxel CSVs reach hundreds
+of gigabytes for a full state.
+
+### Throughput measurement
+
+[`postthesis/r0_resolution/`](postthesis/r0_resolution) re-runs a fixed
+building set at a second voxel edge length, so throughput and output size
+can be compared across resolutions rather than quoted at one:
+
+| Script               | Purpose |
+|----------------------|---------|
+| `revoxelise.py`      | Drives re-voxelization of a manifest at `--voxel`, with `--out`, `--work` and `--src` all overridable |
+| `run_050.sh`         | A worked example: the same building set at 0.5 m |
+| `memsample.py`       | Samples container and device memory during a run — the work happens inside containers, so the driver's own RSS measures nothing |
+| `throughput_table.py`| Turns the run logs into a per-stage, per-city, per-resolution table |
+
+`revoxelise.py` reads only the `gmlid` column from the manifest it is
+given, so any manifest listing the same building set is interchangeable.
 
 ---
 
